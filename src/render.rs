@@ -7,8 +7,12 @@
 //! - Create a native OS window via `eframe`.
 //! - Render the markdown document using `egui_commonmark`.
 //! - Poll the file-watcher channel and hot-reload on changes (`--watch`).
-//! - Intercept link clicks and open them in the default browser.
+//! - Intercept link clicks: open external URLs in the browser, navigate local
+//!   links within the viewer, and scroll to in-document `#anchor` fragments.
+//! - Provide a menu bar for theme selection.
+//! - Support vim-style navigation keys (h/j/k/l, Ctrl-U/D, arrows, PageUp/PageDown).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -53,7 +57,7 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
         None
     };
 
-    let app = MdrApp::new(markdown, file_path.to_path_buf(), watcher_rx);
+    let app = MdrApp::new(markdown, file_path.to_path_buf(), watcher_rx, config.theme);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -383,6 +387,9 @@ fn setup_fonts(ctx: &egui::Context) {
 // App state
 // ---------------------------------------------------------------------------
 
+/// Pixels scrolled per j / k / Arrow keypress.
+const LINE_SCROLL: f32 = 40.0;
+
 struct MdrApp {
     /// Current markdown source text.
     markdown: String,
@@ -392,16 +399,60 @@ struct MdrApp {
     cache: CommonMarkCache,
     /// Channel to receive file-change notifications.
     watcher_rx: Option<Receiver<()>>,
+    /// Current vertical scroll position in logical pixels.
+    ///
+    /// Driven by vim-motion keys; kept in sync with the ScrollArea output so
+    /// that mouse-wheel / drag scrolling is also reflected here.
+    scroll_offset: f32,
+    /// Currently active theme (can be changed at runtime via the menu bar).
+    active_theme: ThemeArg,
+    /// Markdown split at ATX heading boundaries.
+    ///
+    /// Each entry is `(slug, chunk)` where `slug` is the GitHub-style anchor
+    /// for that section's heading and `chunk` is the markdown text for that
+    /// section (heading line + body until the next heading).  The first entry
+    /// has an empty slug when there is preamble content before the first heading.
+    heading_sections: Vec<(String, String)>,
+    /// Content-space Y coordinate (in logical pixels) of each heading anchor.
+    ///
+    /// Populated during the first rendered frame and updated every frame so
+    /// that it stays accurate after font/layout changes.
+    heading_y_positions: HashMap<String, f32>,
 }
 
 impl MdrApp {
-    fn new(markdown: String, file_path: PathBuf, watcher_rx: Option<Receiver<()>>) -> Self {
+    fn new(
+        markdown: String,
+        file_path: PathBuf,
+        watcher_rx: Option<Receiver<()>>,
+        theme: ThemeArg,
+    ) -> Self {
+        let heading_sections = parse_heading_sections(&markdown);
+        let mut cache = CommonMarkCache::default();
+        register_anchor_hooks(&mut cache, &heading_sections);
         Self {
             markdown,
             file_path,
-            cache: CommonMarkCache::default(),
+            cache,
             watcher_rx,
+            scroll_offset: 0.0,
+            active_theme: theme,
+            heading_sections,
+            heading_y_positions: HashMap::new(),
         }
+    }
+
+    /// Load a new markdown document, replacing the current one.
+    ///
+    /// Resets the cache, re-parses headings, and re-registers anchor hooks.
+    fn load_document(&mut self, content: String, path: PathBuf) {
+        self.heading_sections = parse_heading_sections(&content);
+        self.markdown = content;
+        self.file_path = path;
+        self.cache = CommonMarkCache::default();
+        register_anchor_hooks(&mut self.cache, &self.heading_sections);
+        self.scroll_offset = 0.0;
+        self.heading_y_positions.clear();
     }
 
     /// Drain the watcher channel and reload the file if a change arrived.
@@ -414,9 +465,8 @@ impl MdrApp {
             while rx.try_recv().is_ok() {}
             match std::fs::read_to_string(&self.file_path) {
                 Ok(new_content) => {
-                    self.markdown = new_content;
-                    // Reset the cache so headings/anchors are re-parsed.
-                    self.cache = CommonMarkCache::default();
+                    let path = self.file_path.clone();
+                    self.load_document(new_content, path);
                 }
                 Err(e) => eprintln!("Warning: could not reload file: {e}"),
             }
@@ -424,6 +474,9 @@ impl MdrApp {
     }
 }
 
+// ---------------------------------------------------------------------------
+// eframe::App implementation
+// ---------------------------------------------------------------------------
 impl eframe::App for MdrApp {
     /// The wgpu surface clear color — must match the active theme's window fill
     /// so that the dark default (12, 12, 12) eframe uses does not bleed through
@@ -447,36 +500,360 @@ impl eframe::App for MdrApp {
 
     /// Called each frame to paint the UI.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::ScrollArea::vertical()
+        // ── Menu bar ──────────────────────────────────────────────────────
+        egui::Panel::top("menubar").show_inside(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("Theme", |ui| {
+                    const THEMES: &[(ThemeArg, &str)] = &[
+                        (ThemeArg::System, "System"),
+                        (ThemeArg::Light, "Light"),
+                        (ThemeArg::Dark, "Dark"),
+                        (ThemeArg::TokyoNight, "Tokyo Night"),
+                        (ThemeArg::SolarizedDark, "Solarized Dark"),
+                    ];
+                    for &(theme, label) in THEMES {
+                        if ui
+                            .add(egui::Button::selectable(self.active_theme == theme, label))
+                            .clicked()
+                        {
+                            self.active_theme = theme;
+                            apply_theme(ui.ctx(), theme);
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        });
+
+        // ── Vim-motion keyboard navigation ────────────────────────────────
+        let half_page = ui
+            .ctx()
+            .input(|i| i.viewport().inner_rect.map_or(360.0, |r| r.height() / 2.0));
+
+        ui.ctx().input_mut(|i| {
+            // j / l / ArrowDown — scroll down one line
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::L)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            {
+                self.scroll_offset += LINE_SCROLL;
+            }
+            // k / h / ArrowUp — scroll up one line
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            {
+                self.scroll_offset -= LINE_SCROLL;
+            }
+            // Ctrl-D / PageDown — scroll down half a page
+            if i.consume_key(egui::Modifiers::CTRL, egui::Key::D)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::PageDown)
+            {
+                self.scroll_offset += half_page;
+            }
+            // Ctrl-U / PageUp — scroll up half a page
+            if i.consume_key(egui::Modifiers::CTRL, egui::Key::U)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::PageUp)
+            {
+                self.scroll_offset -= half_page;
+            }
+        });
+
+        self.scroll_offset = self.scroll_offset.max(0.0);
+
+        // ── Markdown content ──────────────────────────────────────────────
+        //
+        // The document is split at ATX-heading boundaries so we can record
+        // the content-space Y of each section before rendering it.  If an
+        // anchor link was clicked this frame we update `scroll_offset` to
+        // jump to that heading.
+        let mut clicked_anchor: Option<String> = None;
+
+        let scroll_output = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .vertical_scroll_offset(self.scroll_offset)
             .show(ui, |ui| {
-                // Limit content width to a comfortable reading measure.
                 ui.set_max_width(860.0);
 
-                CommonMarkViewer::new().show_alt_text_on_hover(true).show(
-                    ui,
-                    &mut self.cache,
-                    &self.markdown,
-                );
+                // Y of the very first widget inside the ScrollArea (content space).
+                // Because egui positions content at inner_rect.min - state.offset,
+                // all widget positions inside this closure are already in content
+                // coordinates — no manual scroll_offset addition is needed.
+                let origin_y = ui.next_widget_position().y;
+
+                for (index, (slug, chunk)) in self.heading_sections.iter().enumerate() {
+                    // Record content-space Y before rendering this section.
+                    let screen_y_before = ui.next_widget_position().y;
+                    let content_y = screen_y_before - origin_y;
+                    if !slug.is_empty() {
+                        self.heading_y_positions.insert(slug.clone(), content_y);
+                    }
+
+                    // Each chunk gets its own ID namespace so that widgets
+                    // rendered by CommonMarkViewer::show() don't clash across
+                    // chunks (egui would warn "multiple uses of the same ID").
+                    ui.push_id(index, |ui| {
+                        CommonMarkViewer::new().show_alt_text_on_hover(true).show(
+                            ui,
+                            &mut self.cache,
+                            chunk,
+                        );
+
+                        // Peek at link hooks after this chunk's render, before the
+                        // next show() call resets them via prepare_show().
+                        for (hook_slug, &activated) in self.cache.link_hooks() {
+                            if activated {
+                                clicked_anchor = Some(hook_slug.clone());
+                            }
+                        }
+                    });
+                }
             });
 
-        // Open external links in the system browser; leave anchors for egui.
-        // In egui 0.34 link clicks are queued as OutputCommand::OpenUrl in
-        // PlatformOutput::commands, so we drain and re-queue non-http ones.
+        // Keep our stored offset in sync with whatever the ScrollArea settled
+        // on (mouse-wheel, drag, and clamping to content bounds all adjust it).
+        self.scroll_offset = scroll_output.state.offset.y;
+
+        // If a heading anchor was clicked, jump to it.
+        if let Some(ref slug) = clicked_anchor
+            && let Some(&target_y) = self.heading_y_positions.get(slug)
+        {
+            self.scroll_offset = target_y;
+        }
+
+        // ── Link handling ─────────────────────────────────────────────────
+        // Drain every OutputCommand that egui_commonmark queued this frame.
+        //
+        // Routing logic:
+        //   • http:// / https:// → open in the system browser.
+        //   • Local paths (relative or file://) → resolve against the current
+        //     file's directory, load the new markdown, reset state.
+        //   • Fragment-only (#anchor) → handled via link_hooks above;
+        //     drop to prevent egui-winit from forwarding them to the browser.
+        //   • Any other OpenUrl (mailto:, unknown scheme) → drop silently.
+        //   • Non-OpenUrl commands (CopyText, CopyImage) → re-queue so egui
+        //     can process them normally.
         let commands: Vec<_> = ui.ctx().output_mut(|o| std::mem::take(&mut o.commands));
         for cmd in commands {
-            match &cmd {
-                egui::OutputCommand::OpenUrl(open_url)
+            match cmd {
+                egui::OutputCommand::OpenUrl(ref open_url)
                     if open_url.url.starts_with("http://")
                         || open_url.url.starts_with("https://") =>
                 {
                     let _ = open::that(&open_url.url);
                 }
+                egui::OutputCommand::OpenUrl(ref open_url) if !open_url.url.starts_with('#') => {
+                    // Resolve the target path relative to the directory that
+                    // contains the currently-displayed file.
+                    let raw = open_url
+                        .url
+                        .strip_prefix("file://")
+                        .unwrap_or(&open_url.url);
+                    let target = if std::path::Path::new(raw).is_absolute() {
+                        PathBuf::from(raw)
+                    } else {
+                        let base = self.file_path.parent().unwrap_or(std::path::Path::new("."));
+                        base.join(raw)
+                    };
+                    match std::fs::read_to_string(&target) {
+                        Ok(content) => {
+                            self.load_document(content, target);
+                        }
+                        Err(e) => eprintln!("Warning: could not open '{}': {e}", target.display()),
+                    }
+                }
+                // Fragment anchors (#section) are handled via link_hooks above;
+                // drop to prevent egui-winit from forwarding them to the browser.
+                egui::OutputCommand::OpenUrl(_) => {}
+                // Re-queue non-URL commands (clipboard, etc.) for normal processing.
                 other => {
-                    // Re-queue non-http commands (clipboard copy, in-page anchors, etc.).
-                    ui.ctx().output_mut(|o| o.commands.push(other.clone()));
+                    ui.ctx().output_mut(|o| o.commands.push(other));
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Anchor / heading helpers
+// ---------------------------------------------------------------------------
+
+/// Split `markdown` at ATX-heading boundaries.
+///
+/// Returns a list of `(slug, chunk)` pairs:
+/// - The first entry may have an empty slug when there is preamble content
+///   before the first heading.
+/// - Every subsequent entry has a GitHub-style slug derived from the heading
+///   text and carries the heading line plus its body text.
+///
+/// Only ATX headings (lines starting with one to six `#` characters followed
+/// by a space) are detected.  Setext-style headings are ignored.
+fn parse_heading_sections(markdown: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_chunk = String::new();
+    let mut current_slug = String::new();
+    let mut slug_counts: HashMap<String, u32> = HashMap::new();
+
+    for line in markdown.lines() {
+        if let Some(heading_text) = extract_atx_heading(line) {
+            // Flush the previous section.
+            if !current_chunk.is_empty() || !current_slug.is_empty() {
+                sections.push((current_slug.clone(), current_chunk.clone()));
+            }
+            current_slug = github_slug(heading_text, &mut slug_counts);
+            current_chunk = format!("{line}\n");
+        } else {
+            current_chunk.push_str(line);
+            current_chunk.push('\n');
+        }
+    }
+    // Push the final section.
+    if !current_chunk.is_empty() {
+        sections.push((current_slug, current_chunk));
+    }
+    sections
+}
+
+/// Extract the heading text from an ATX heading line, or `None` if the line
+/// is not an ATX heading.
+///
+/// ATX heading: 1–6 `#` characters, a single space, then the heading text.
+/// Optional trailing ` ###...` is stripped per the CommonMark spec.
+fn extract_atx_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start_matches('#');
+    let hashes = line.len() - trimmed.len();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = trimmed.strip_prefix(' ')?;
+    // Strip optional closing sequence: trailing whitespace + `#`s + whitespace.
+    let text = rest.trim_end().trim_end_matches('#').trim_end_matches(' ');
+    // An empty heading text is valid but produces a slug of "".
+    // We still return Some so the section boundary is recorded.
+    Some(if text.is_empty() { rest.trim() } else { text })
+}
+
+/// Generate a GitHub-style anchor slug from heading text.
+///
+/// Rules (matching GitHub.com behaviour):
+/// 1. Strip inline-code backticks (keep their content).
+/// 2. Lowercase.
+/// 3. Remove everything that is not ASCII alphanumeric, space, hyphen,
+///    or underscore.
+/// 4. Replace spaces with hyphens (consecutive hyphens are preserved).
+/// 5. Deduplicate: second occurrence gets suffix `-1`, third gets `-2`, etc.
+fn github_slug(text: &str, seen: &mut HashMap<String, u32>) -> String {
+    let base: String = text
+        .replace('`', "")
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect();
+
+    let count = seen.entry(base.clone()).or_insert(0);
+    let slug = if *count == 0 {
+        base.clone()
+    } else {
+        format!("{base}-{}", *count - 1)
+    };
+    *count += 1;
+    // Prepend '#' to match the format egui_commonmark uses for fragment links.
+    format!("#{slug}")
+}
+
+/// Register all non-empty anchor slugs from `sections` as link hooks in `cache`.
+///
+/// This must be called once after loading a document and after resetting the
+/// cache so that fragment links in the rendered markdown are intercepted by
+/// egui_commonmark rather than emitted as `OutputCommand::OpenUrl`.
+fn register_anchor_hooks(cache: &mut CommonMarkCache, sections: &[(String, String)]) {
+    for (slug, _) in sections {
+        if !slug.is_empty() {
+            cache.add_link_hook(slug.as_str());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_simple_heading() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug("Severity Legend", &mut seen),
+            "#severity-legend"
+        );
+    }
+
+    #[test]
+    fn slug_apostrophe_removed() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug("What's Done Well", &mut seen),
+            "#whats-done-well"
+        );
+    }
+
+    #[test]
+    fn slug_preserves_consecutive_hyphens() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug("Part I — Rust Idioms & Anti-patterns", &mut seen),
+            "#part-i--rust-idioms--anti-patterns"
+        );
+    }
+
+    #[test]
+    fn slug_strips_backticks_keeps_content() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug("`run_async` spawns a runtime", &mut seen),
+            "#run_async-spawns-a-runtime"
+        );
+    }
+
+    #[test]
+    fn slug_preserves_underscores() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug("`let _ =` silences errors", &mut seen),
+            "#let-_--silences-errors"
+        );
+    }
+
+    #[test]
+    fn slug_emoji_and_special_chars_removed() {
+        let mut seen = HashMap::new();
+        assert_eq!(
+            github_slug(
+                "I-1 \u{1f534} `HeapError::Success` — success state inside an error enum",
+                &mut seen
+            ),
+            "#i-1--heaperrorsuccess--success-state-inside-an-error-enum"
+        );
+    }
+
+    #[test]
+    fn slug_deduplication() {
+        let mut seen = HashMap::new();
+        assert_eq!(github_slug("Heading", &mut seen), "#heading");
+        assert_eq!(github_slug("Heading", &mut seen), "#heading-0");
+        assert_eq!(github_slug("Heading", &mut seen), "#heading-1");
+    }
+
+    #[test]
+    fn extract_atx_heading_basic() {
+        assert_eq!(extract_atx_heading("## Hello World"), Some("Hello World"));
+        assert_eq!(extract_atx_heading("### Foo"), Some("Foo"));
+        assert_eq!(extract_atx_heading("Not a heading"), None);
+        assert_eq!(extract_atx_heading("####### Too many"), None);
+    }
+
+    #[test]
+    fn extract_atx_heading_trailing_hashes() {
+        assert_eq!(extract_atx_heading("## Title ##"), Some("Title"));
     }
 }
