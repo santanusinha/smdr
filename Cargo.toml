@@ -1,0 +1,25 @@
+[package]
+name = "mdr"
+version = "0.1.0"
+edition = "2024"
+description = "A minimal desktop markdown reader"
+license = "MIT"
+
+[dependencies]
+clap     = { version = "4", features = ["derive"] }
+notify   = "9.0.0-rc.4"
+open     = "5"
+eframe   = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+egui_commonmark = { version = "0.23", features = ["svg", "better_syntax_highlighting", "load-images", "fetch"] }
+egui_extras     = { version = "0.34", features = ["svg", "image", "file", "http"] }
+image    = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile   = "3"
+
+[profile.release]
+opt-level = "s"
+lto       = true
+strip     = true

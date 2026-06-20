@@ -1,0 +1,32 @@
+# cargo-audit configuration
+# https://rustsec.org/
+
+[advisories]
+# These advisories all relate to the GTK3 Rust bindings (gtk-rs v0.18.x) which
+# are pulled in transitively by `tao` (the windowing backend used by `wry`).
+# As of 2025-06, tao v0.35.3 / wry v0.55.1 are the latest releases and both
+# still depend on these GTK3 crates.  We cannot resolve these advisories
+# without replacing the entire webview/windowing stack, which is out of scope
+# for this project.  They are therefore acknowledged and ignored here.
+#
+# Note: these crates are only used to create the native OS window; no
+# VariantStrIter or other affected APIs are called directly by mdr code.
+ignore = [
+    # gtk-rs GTK3 bindings — unmaintained (all v0.18.x)
+    "RUSTSEC-2024-0411",  # gdkwayland-sys
+    "RUSTSEC-2024-0412",  # gdk
+    "RUSTSEC-2024-0413",  # atk
+    "RUSTSEC-2024-0414",  # gdkx11-sys
+    "RUSTSEC-2024-0415",  # gtk
+    "RUSTSEC-2024-0416",  # atk-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0418",  # gdk-sys
+    "RUSTSEC-2024-0419",  # gtk3-macros
+    "RUSTSEC-2024-0420",  # gtk-sys
+
+    # proc-macro-error v1.0.4 — unmaintained; pulled in by tao's macros
+    "RUSTSEC-2024-0370",
+
+    # glib v0.18.5 — unsound VariantStrIter; mdr never touches that iterator
+    "RUSTSEC-2024-0429",
+]
