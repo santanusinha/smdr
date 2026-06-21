@@ -12,18 +12,24 @@
 //! - Tab/Shift-Tab to cycle through document links, Enter to activate.
 //! - `/` or `?` to search, `n`/`p` to cycle through matches.
 //! - Permanent bottom status bar with theme selector, shortcuts, and about.
+//! - Collapsible, resizable left sidebar showing document outline (headings).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use iced::border;
+use iced::event;
 use iced::keyboard;
+use iced::mouse;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{
-    button, column, container, markdown, pick_list, rich_text, row, scrollable, text, text_input,
+    button, column, container, markdown, mouse_area, pick_list, rich_text, row, rule, scrollable,
+    text, text_input,
 };
-use iced::{Background, Color, Element, Length, Pixels, Renderer, Subscription, Task, Theme};
+use iced::{
+    Background, Color, Element, Event, Length, Pixels, Renderer, Subscription, Task, Theme,
+};
 
 use mdr::watcher;
 
@@ -46,6 +52,19 @@ const SCROLLABLE_ID: &str = "mdr-content-scroll";
 
 /// Text input widget ID for search bar focus.
 const SEARCH_INPUT_ID: &str = "mdr-search-input";
+
+/// Default sidebar width in pixels.
+/// Default sidebar ratio (fraction of window width).
+const DEFAULT_SIDEBAR_RATIO: f32 = 0.25;
+
+/// Minimum sidebar ratio.
+const MIN_SIDEBAR_RATIO: f32 = 0.15;
+
+/// Maximum sidebar ratio.
+const MAX_SIDEBAR_RATIO: f32 = 0.40;
+
+/// Initial window width used before the first resize event.
+const INITIAL_WINDOW_WIDTH: f32 = 960.0;
 
 /// Launches the viewer window and blocks until it is closed.
 ///
@@ -119,6 +138,7 @@ struct AppInit {
 impl AppInit {
     fn build(self) -> (MdrApp, Task<Message>) {
         let links = extract_links(&self.markdown_src);
+        let toc = extract_toc(&self.markdown_src);
         let content = markdown::Content::parse(&self.markdown_src);
         let app = MdrApp {
             raw_markdown: self.markdown_src,
@@ -140,6 +160,11 @@ impl AppInit {
             search_hits: Vec::new(),
             current_hit: None,
             overlay: Overlay::None,
+            toc,
+            sidebar_open: true,
+            sidebar_ratio: DEFAULT_SIDEBAR_RATIO,
+            sidebar_dragging: false,
+            window_width: INITIAL_WINDOW_WIDTH,
         };
         (app, Task::none())
     }
@@ -175,6 +200,21 @@ struct DocumentLink {
 }
 
 // ---------------------------------------------------------------------------
+// Table of contents entry
+// ---------------------------------------------------------------------------
+
+/// A heading extracted from the document for sidebar navigation.
+#[derive(Debug, Clone)]
+struct TocEntry {
+    /// Heading level (1-6).
+    level: u8,
+    /// Display text of the heading.
+    text: String,
+    /// Line number (0-based) in the source.
+    line: usize,
+}
+
+// ---------------------------------------------------------------------------
 // Overlay state
 // ---------------------------------------------------------------------------
 
@@ -206,11 +246,18 @@ enum Message {
     SearchNext,
     SearchPrev,
     ThemeChanged(ThemeArg),
+    CycleTheme,
     ShowShortcuts,
     ShowAbout,
     CloseOverlay,
+    ToggleSidebar,
+    SidebarDragStart,
+    SidebarDragMove(f32),
+    SidebarDragEnd,
+    NavigateToHeading(usize),
     Tick,
     Scrolled(scrollable::Viewport),
+    WindowResized(iced::Size),
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +286,16 @@ struct MdrApp {
     search_hits: Vec<usize>,
     current_hit: Option<usize>,
     overlay: Overlay,
+    /// Table of contents (headings) for sidebar navigation.
+    toc: Vec<TocEntry>,
+    /// Whether the sidebar is visible.
+    sidebar_open: bool,
+    /// Current sidebar width as a ratio of window width (0.15..=0.40).
+    sidebar_ratio: f32,
+    /// Whether the user is actively dragging the sidebar resize handle.
+    sidebar_dragging: bool,
+    /// Current window width in pixels (updated on resize events).
+    window_width: f32,
 }
 
 impl MdrApp {
@@ -359,6 +416,15 @@ impl MdrApp {
                 self.active_theme = theme_arg;
                 Task::none()
             }
+            Message::CycleTheme => {
+                let all = ThemeArg::ALL;
+                let idx = all
+                    .iter()
+                    .position(|t| *t == self.active_theme)
+                    .unwrap_or(0);
+                self.active_theme = all[(idx + 1) % all.len()];
+                Task::none()
+            }
             Message::ShowShortcuts => {
                 self.overlay = if self.overlay == Overlay::Shortcuts {
                     Overlay::None
@@ -379,12 +445,50 @@ impl MdrApp {
                 self.overlay = Overlay::None;
                 Task::none()
             }
+            Message::ToggleSidebar => {
+                self.sidebar_open = !self.sidebar_open;
+                Task::none()
+            }
+            Message::SidebarDragStart => {
+                self.sidebar_dragging = true;
+                Task::none()
+            }
+            Message::SidebarDragMove(x) => {
+                if self.sidebar_dragging {
+                    self.sidebar_ratio =
+                        (x / self.window_width).clamp(MIN_SIDEBAR_RATIO, MAX_SIDEBAR_RATIO);
+                }
+                Task::none()
+            }
+            Message::SidebarDragEnd => {
+                self.sidebar_dragging = false;
+                Task::none()
+            }
+            Message::NavigateToHeading(idx) => {
+                if let Some(entry) = self.toc.get(idx) {
+                    let total_lines = self.raw_markdown.lines().count() as f32;
+                    if total_lines > 0.0 {
+                        let target_y = (entry.line as f32) / total_lines;
+                        self.push_nav(self.file_path.clone(), target_y);
+                        let offset = RelativeOffset {
+                            x: 0.0,
+                            y: target_y,
+                        };
+                        return operation::snap_to(Id::new(SCROLLABLE_ID), offset);
+                    }
+                }
+                Task::none()
+            }
             Message::Tick => {
                 self.poll_watcher();
                 Task::none()
             }
             Message::Scrolled(viewport) => {
                 self.current_scroll_y = viewport.relative_offset().y;
+                Task::none()
+            }
+            Message::WindowResized(size) => {
+                self.window_width = size.width;
                 Task::none()
             }
         }
@@ -486,6 +590,27 @@ impl MdrApp {
             Overlay::About => Some(self.build_about_panel()),
         };
 
+        // --- Sidebar + content area ---
+        let main_body: Element<'_, Message> = if self.sidebar_open && !self.toc.is_empty() {
+            let sidebar = self.build_sidebar();
+
+            // Drag handle: a narrow vertical rule wrapped in a MouseArea
+            let drag_handle: Element<'_, Message> = mouse_area(
+                container(rule::vertical(1))
+                    .height(Length::Fill)
+                    .padding([0, 2]),
+            )
+            .on_press(Message::SidebarDragStart)
+            .interaction(mouse::Interaction::ResizingColumn)
+            .into();
+
+            row![sidebar, drag_handle, content_area]
+                .height(Length::Fill)
+                .into()
+        } else {
+            content_area.into()
+        };
+
         // Assemble the full layout
         let mut layout = column![];
 
@@ -494,15 +619,57 @@ impl MdrApp {
         }
 
         if let Some(panel) = overlay_panel {
-            // Stack: content area takes remaining space, overlay sits between content and status
-            layout = layout.push(content_area);
+            layout = layout.push(main_body);
             layout = layout.push(panel);
         } else {
-            layout = layout.push(content_area);
+            layout = layout.push(main_body);
         }
 
         layout = layout.push(status_bar);
         layout.into()
+    }
+
+    /// Build the collapsible left sidebar showing document outline.
+    fn build_sidebar(&self) -> Element<'_, Message> {
+        let min_level = self.toc.iter().map(|e| e.level).min().unwrap_or(1);
+
+        let mut items = column![].spacing(2).padding([8, 4]);
+
+        for (idx, entry) in self.toc.iter().enumerate() {
+            let indent = ((entry.level - min_level) as u16) * 12;
+            let label = text(&entry.text).size(13);
+            let btn = button(label)
+                .on_press(Message::NavigateToHeading(idx))
+                .padding([2, 4])
+                .style(button::text);
+
+            let left_pad = iced::Padding::ZERO.left((indent as f32) * 1.0);
+            items = items.push(container(btn).padding(left_pad));
+        }
+
+        let header = row![
+            text("Outline").size(13),
+            container(
+                button(text("✕").size(11))
+                    .on_press(Message::ToggleSidebar)
+                    .padding(2)
+                    .style(button::text)
+            )
+            .width(Length::Fill)
+            .align_x(iced::Alignment::End),
+        ]
+        .align_y(iced::Alignment::Center)
+        .padding([4, 8])
+        .width(Length::Fill);
+
+        container(
+            column![header, scrollable(items).height(Length::Fill)]
+                .height(Length::Fill)
+                .width(Length::Fixed(self.window_width * self.sidebar_ratio)),
+        )
+        .height(Length::Fill)
+        .style(container::rounded_box)
+        .into()
     }
 
     /// Build the permanent bottom status bar.
@@ -534,7 +701,11 @@ impl MdrApp {
                 text("").size(12).into()
             };
 
-        // Right side: theme selector + shortcuts + about buttons
+        // Right side: sidebar toggle + theme selector + shortcuts + about buttons
+        let sidebar_btn = button(text("☰").size(14))
+            .on_press(Message::ToggleSidebar)
+            .padding(4);
+
         let theme_picker = pick_list(
             ThemeArg::ALL,
             Some(self.active_theme),
@@ -551,7 +722,7 @@ impl MdrApp {
             .on_press(Message::ShowAbout)
             .padding(4);
 
-        let right_side = row![theme_picker, shortcuts_btn, about_btn]
+        let right_side = row![sidebar_btn, theme_picker, shortcuts_btn, about_btn]
             .spacing(6)
             .align_y(iced::Alignment::Center);
 
@@ -582,6 +753,8 @@ impl MdrApp {
             ("Ctrl-F", "Open search"),
             ("n", "Next search hit"),
             ("p", "Previous search hit"),
+            ("Ctrl-B", "Toggle sidebar"),
+            ("Ctrl-T", "Cycle theme"),
             ("Esc", "Close search / overlay"),
         ];
 
@@ -720,6 +893,8 @@ impl MdrApp {
                                 "d" => Some(Message::ScrollBy(360.0)),
                                 "u" => Some(Message::ScrollBy(-360.0)),
                                 "f" => Some(Message::SearchOpen),
+                                "b" => Some(Message::ToggleSidebar),
+                                "t" => Some(Message::CycleTheme),
                                 _ => None,
                             }
                         } else if modifiers.alt() {
@@ -741,10 +916,23 @@ impl MdrApp {
                 }
             });
 
+        // Global mouse event subscription for sidebar drag tracking
+        let mouse_events = event::listen_with(|event, _status, _window| match event {
+            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                Some(Message::SidebarDragMove(position.x))
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                Some(Message::SidebarDragEnd)
+            }
+            _ => None,
+        });
+
         let ticker =
             iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick);
 
-        Subscription::batch([keys, ticker])
+        let window_resize =
+            iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size));
+        Subscription::batch([keys, mouse_events, window_resize, ticker])
     }
 
     // -----------------------------------------------------------------------
@@ -885,6 +1073,7 @@ impl MdrApp {
         match std::fs::read_to_string(path) {
             Ok(src) => {
                 self.links = extract_links(&src);
+                self.toc = extract_toc(&src);
                 self.focused_link = None;
                 self.raw_markdown = src;
                 self.content = markdown::Content::parse(&self.raw_markdown);
@@ -909,6 +1098,7 @@ impl MdrApp {
             match std::fs::read_to_string(&self.file_path) {
                 Ok(new_content) => {
                     self.links = extract_links(&new_content);
+                    self.toc = extract_toc(&new_content);
                     self.focused_link = None;
                     self.raw_markdown = new_content;
                     self.content = markdown::Content::parse(&self.raw_markdown);
@@ -1070,6 +1260,40 @@ fn extract_links(source: &str) -> Vec<DocumentLink> {
     }
 
     links
+}
+
+// ---------------------------------------------------------------------------
+// Table of contents extraction
+// ---------------------------------------------------------------------------
+
+/// Extract all headings from the markdown source for the sidebar outline.
+fn extract_toc(source: &str) -> Vec<TocEntry> {
+    let mut entries = Vec::new();
+
+    for (line_num, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start_matches('#');
+        let hash_count = line.len() - trimmed.len();
+        if hash_count == 0 || hash_count > 6 {
+            continue;
+        }
+        // Must have a space after the hashes
+        if !trimmed.starts_with(' ') {
+            continue;
+        }
+        let heading_text = trimmed[1..].trim_end().trim_end_matches('#').trim();
+        if heading_text.is_empty() {
+            continue;
+        }
+        // Strip backticks for display
+        let display_text = heading_text.replace('`', "");
+        entries.push(TocEntry {
+            level: hash_count as u8,
+            text: display_text,
+            line: line_num,
+        });
+    }
+
+    entries
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,5 +1504,49 @@ mod tests {
             ThemeArg::CatppuccinFrappe.to_string(),
             "Catppuccin Frapp\u{e9}"
         );
+    }
+
+    #[test]
+    fn extract_toc_basic() {
+        let md = "# Title\n\nSome text\n\n## Section One\n\nContent\n\n### Subsection\n\n## Section Two\n";
+        let toc = extract_toc(md);
+        assert_eq!(toc.len(), 4);
+        assert_eq!(toc[0].level, 1);
+        assert_eq!(toc[0].text, "Title");
+        assert_eq!(toc[0].line, 0);
+        assert_eq!(toc[1].level, 2);
+        assert_eq!(toc[1].text, "Section One");
+        assert_eq!(toc[1].line, 4);
+        assert_eq!(toc[2].level, 3);
+        assert_eq!(toc[2].text, "Subsection");
+        assert_eq!(toc[2].line, 8);
+        assert_eq!(toc[3].level, 2);
+        assert_eq!(toc[3].text, "Section Two");
+        assert_eq!(toc[3].line, 10);
+    }
+
+    #[test]
+    fn extract_toc_strips_backticks() {
+        let md = "## `Config` options\n";
+        let toc = extract_toc(md);
+        assert_eq!(toc.len(), 1);
+        assert_eq!(toc[0].text, "Config options");
+    }
+
+    #[test]
+    fn extract_toc_skips_non_headings() {
+        let md = "Not a heading\n#nospace\n####### Too many\n## Valid\n";
+        let toc = extract_toc(md);
+        assert_eq!(toc.len(), 1);
+        assert_eq!(toc[0].text, "Valid");
+        assert_eq!(toc[0].line, 3);
+    }
+
+    #[test]
+    fn extract_toc_trailing_hashes() {
+        let md = "## Title ##\n";
+        let toc = extract_toc(md);
+        assert_eq!(toc.len(), 1);
+        assert_eq!(toc[0].text, "Title");
     }
 }
