@@ -4,6 +4,20 @@ site_url = "https://github.com/user/mdr"
 site_description = "A minimal desktop markdown reader"
 
 [theme]
-palette.primary = "indigo"
-palette.accent = "blue"
 features = ["navigation.instant", "navigation.top"]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "blue"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "blue"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
