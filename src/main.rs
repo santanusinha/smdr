@@ -175,6 +175,35 @@ impl ThemeArg {
         }
     }
 
+    /// Human-readable display name for the theme (used in UI pick-list).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::Dracula => "Dracula",
+            Self::Nord => "Nord",
+            Self::SolarizedLight => "Solarized Light",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::GruvboxLight => "Gruvbox Light",
+            Self::GruvboxDark => "Gruvbox Dark",
+            Self::CatppuccinLatte => "Catppuccin Latte",
+            Self::CatppuccinFrappe => "Catppuccin Frapp\u{e9}",
+            Self::CatppuccinMacchiato => "Catppuccin Macchiato",
+            Self::CatppuccinMocha => "Catppuccin Mocha",
+            Self::TokyoNight => "Tokyo Night",
+            Self::TokyoNightStorm => "Tokyo Night Storm",
+            Self::TokyoNightLight => "Tokyo Night Light",
+            Self::KanagawaWave => "Kanagawa Wave",
+            Self::KanagawaDragon => "Kanagawa Dragon",
+            Self::KanagawaLotus => "Kanagawa Lotus",
+            Self::Moonfly => "Moonfly",
+            Self::Nightfly => "Nightfly",
+            Self::Oxocarbon => "Oxocarbon",
+            Self::Ferra => "Ferra",
+        }
+    }
+
     /// Human-readable description for the theme.
     pub fn description(self) -> &'static str {
         match self {
@@ -207,7 +236,7 @@ impl ThemeArg {
 
 impl std::fmt::Display for ThemeArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.slug())
+        f.write_str(self.display_name())
     }
 }
 

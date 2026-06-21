@@ -1274,8 +1274,11 @@ mod tests {
 
     #[test]
     fn theme_arg_display() {
-        assert_eq!(ThemeArg::System.to_string(), "system");
-        assert_eq!(ThemeArg::SolarizedLight.to_string(), "solarized-light");
-        assert_eq!(ThemeArg::CatppuccinFrappe.to_string(), "catppuccin-frappe");
+        assert_eq!(ThemeArg::System.to_string(), "System");
+        assert_eq!(ThemeArg::SolarizedLight.to_string(), "Solarized Light");
+        assert_eq!(
+            ThemeArg::CatppuccinFrappe.to_string(),
+            "Catppuccin Frapp\u{e9}"
+        );
     }
 }
