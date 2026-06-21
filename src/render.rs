@@ -11,6 +11,7 @@
 //!   history; h/Left (back) and l/Right (forward) traverse that history.
 //! - Tab/Shift-Tab to cycle through document links, Enter to activate.
 //! - `/` or `?` to search, `n`/`p` to cycle through matches.
+//! - Permanent bottom status bar with theme selector, shortcuts, and about.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -19,7 +20,9 @@ use iced::border;
 use iced::keyboard;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
-use iced::widget::{column, container, markdown, rich_text, row, scrollable, text, text_input};
+use iced::widget::{
+    button, column, container, markdown, pick_list, rich_text, row, scrollable, text, text_input,
+};
 use iced::{Background, Color, Element, Length, Pixels, Renderer, Subscription, Task, Theme};
 
 use mdr::watcher;
@@ -98,7 +101,7 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
         MdrApp::view,
     )
     .subscription(MdrApp::subscription)
-    .theme(|app: &MdrApp| app.theme())
+    .theme(|app: &MdrApp| app.active_theme.to_theme())
     .title(|app: &MdrApp| app.title.clone())
     .window_size((960.0, 720.0))
     .run()
@@ -136,6 +139,7 @@ impl AppInit {
             search_query: String::new(),
             search_hits: Vec::new(),
             current_hit: None,
+            overlay: Overlay::None,
         };
         (app, Task::none())
     }
@@ -171,6 +175,18 @@ struct DocumentLink {
 }
 
 // ---------------------------------------------------------------------------
+// Overlay state
+// ---------------------------------------------------------------------------
+
+/// Which overlay panel (if any) is currently displayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Overlay {
+    None,
+    Shortcuts,
+    About,
+}
+
+// ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
 
@@ -189,6 +205,10 @@ enum Message {
     SearchSubmit,
     SearchNext,
     SearchPrev,
+    ThemeChanged(ThemeArg),
+    ShowShortcuts,
+    ShowAbout,
+    CloseOverlay,
     Tick,
     Scrolled(scrollable::Viewport),
 }
@@ -218,19 +238,10 @@ struct MdrApp {
     search_query: String,
     search_hits: Vec<usize>,
     current_hit: Option<usize>,
+    overlay: Overlay,
 }
 
 impl MdrApp {
-    fn theme(&self) -> Theme {
-        match self.active_theme {
-            ThemeArg::System => Theme::Light,
-            ThemeArg::Light => Theme::Light,
-            ThemeArg::Dark => Theme::Dark,
-            ThemeArg::TokyoNight => Theme::TokyoNight,
-            ThemeArg::SolarizedDark => Theme::SolarizedDark,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Update
     // -----------------------------------------------------------------------
@@ -344,6 +355,30 @@ impl MdrApp {
                 }
                 self.scroll_to_current_hit()
             }
+            Message::ThemeChanged(theme_arg) => {
+                self.active_theme = theme_arg;
+                Task::none()
+            }
+            Message::ShowShortcuts => {
+                self.overlay = if self.overlay == Overlay::Shortcuts {
+                    Overlay::None
+                } else {
+                    Overlay::Shortcuts
+                };
+                Task::none()
+            }
+            Message::ShowAbout => {
+                self.overlay = if self.overlay == Overlay::About {
+                    Overlay::None
+                } else {
+                    Overlay::About
+                };
+                Task::none()
+            }
+            Message::CloseOverlay => {
+                self.overlay = Overlay::None;
+                Task::none()
+            }
             Message::Tick => {
                 self.poll_watcher();
                 Task::none()
@@ -359,7 +394,7 @@ impl MdrApp {
     // View
     // -----------------------------------------------------------------------
     fn view(&self) -> Element<'_, Message> {
-        let theme = self.theme();
+        let theme = self.active_theme.to_theme();
         let is_dark = theme.extended_palette().is_dark;
         let mut style = markdown::Style::from(&theme);
 
@@ -405,8 +440,8 @@ impl MdrApp {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        // Status bar: shows focused link info or search bar
-        if self.search_mode {
+        // --- Search bar (shown above content when in search mode) ---
+        let search_bar: Option<Element<'_, Message>> = if self.search_mode {
             let hit_info = if self.search_hits.is_empty() {
                 if self.search_query.is_empty() {
                     String::new()
@@ -418,55 +453,203 @@ impl MdrApp {
                 format!("{}/{}", idx, self.search_hits.len())
             };
 
-            let search_bar = container(
-                row![
-                    text("/").size(14),
-                    text_input("Search...", &self.search_query)
-                        .id(Id::new(SEARCH_INPUT_ID))
-                        .on_input(Message::SearchInput)
-                        .on_submit(Message::SearchSubmit)
-                        .width(Length::Fill)
-                        .size(14),
-                    text(hit_info).size(12),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
+            Some(
+                container(
+                    row![
+                        text("/").size(14),
+                        text_input("Search...", &self.search_query)
+                            .id(Id::new(SEARCH_INPUT_ID))
+                            .on_input(Message::SearchInput)
+                            .on_submit(Message::SearchSubmit)
+                            .width(Length::Fill)
+                            .size(14),
+                        text(hit_info).size(12),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding(6)
+                .width(Length::Fill)
+                .into(),
             )
-            .padding(6)
-            .width(Length::Fill);
-
-            column![search_bar, content_area].into()
-        } else if !self.search_hits.is_empty() {
-            // Show search status bar after search bar is closed
-            let idx = self.current_hit.map_or(0, |i| i + 1);
-            let status = format!(
-                "[{}/{}] \"{}\"",
-                idx,
-                self.search_hits.len(),
-                self.search_query
-            );
-            let status_bar = container(text(status).size(12))
-                .padding(6)
-                .width(Length::Fill);
-
-            column![content_area, status_bar].into()
-        } else if let Some(idx) = self.focused_link {
-            let link = &self.links[idx];
-            let link_info = format!(
-                "[{}/{}] {} → {}",
-                idx + 1,
-                self.links.len(),
-                link.text,
-                link.url
-            );
-            let link_bar = container(text(link_info).size(12))
-                .padding(6)
-                .width(Length::Fill);
-
-            column![content_area, link_bar].into()
         } else {
-            content_area.into()
+            None
+        };
+
+        // --- Permanent status bar (bottom) ---
+        let status_bar = self.build_status_bar();
+
+        // --- Overlay panel ---
+        let overlay_panel: Option<Element<'_, Message>> = match &self.overlay {
+            Overlay::None => None,
+            Overlay::Shortcuts => Some(self.build_shortcuts_panel()),
+            Overlay::About => Some(self.build_about_panel()),
+        };
+
+        // Assemble the full layout
+        let mut layout = column![];
+
+        if let Some(bar) = search_bar {
+            layout = layout.push(bar);
         }
+
+        if let Some(panel) = overlay_panel {
+            // Stack: content area takes remaining space, overlay sits between content and status
+            layout = layout.push(content_area);
+            layout = layout.push(panel);
+        } else {
+            layout = layout.push(content_area);
+        }
+
+        layout = layout.push(status_bar);
+        layout.into()
+    }
+
+    /// Build the permanent bottom status bar.
+    fn build_status_bar(&self) -> Element<'_, Message> {
+        // Left side: contextual messages
+        let left_content: Element<'_, Message> =
+            if !self.search_hits.is_empty() && !self.search_mode {
+                let idx = self.current_hit.map_or(0, |i| i + 1);
+                text(format!(
+                    "[{}/{}] \"{}\"",
+                    idx,
+                    self.search_hits.len(),
+                    self.search_query
+                ))
+                .size(12)
+                .into()
+            } else if let Some(idx) = self.focused_link {
+                let link = &self.links[idx];
+                text(format!(
+                    "[{}/{}] {} → {}",
+                    idx + 1,
+                    self.links.len(),
+                    link.text,
+                    link.url
+                ))
+                .size(12)
+                .into()
+            } else {
+                text("").size(12).into()
+            };
+
+        // Right side: theme selector + shortcuts + about buttons
+        let theme_picker = pick_list(
+            ThemeArg::ALL,
+            Some(self.active_theme),
+            Message::ThemeChanged,
+        )
+        .text_size(12)
+        .padding(2);
+
+        let shortcuts_btn = button(text("⌨").size(14))
+            .on_press(Message::ShowShortcuts)
+            .padding(4);
+
+        let about_btn = button(text("ℹ").size(14))
+            .on_press(Message::ShowAbout)
+            .padding(4);
+
+        let right_side = row![theme_picker, shortcuts_btn, about_btn]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+
+        container(
+            row![container(left_content).width(Length::Fill), right_side,]
+                .align_y(iced::Alignment::Center)
+                .spacing(8),
+        )
+        .padding([4, 8])
+        .width(Length::Fill)
+        .style(container::rounded_box)
+        .into()
+    }
+
+    /// Build the keyboard shortcuts overlay panel.
+    fn build_shortcuts_panel(&self) -> Element<'_, Message> {
+        let shortcuts = [
+            ("j / ↓", "Scroll down"),
+            ("k / ↑", "Scroll up"),
+            ("Ctrl-D / PgDn", "Page down"),
+            ("Ctrl-U / PgUp", "Page up"),
+            ("h / ←", "Navigate back"),
+            ("l / →", "Navigate forward"),
+            ("Tab", "Next link"),
+            ("Shift-Tab", "Previous link"),
+            ("Enter", "Activate link / next hit"),
+            ("/ or ?", "Open search"),
+            ("Ctrl-F", "Open search"),
+            ("n", "Next search hit"),
+            ("p", "Previous search hit"),
+            ("Esc", "Close search / overlay"),
+        ];
+
+        let mut shortcut_rows = column![].spacing(4).padding(8);
+        for (key, desc) in shortcuts {
+            shortcut_rows = shortcut_rows.push(
+                row![
+                    container(text(key).size(12)).width(Length::Fixed(140.0)),
+                    text(desc).size(12),
+                ]
+                .spacing(8),
+            );
+        }
+
+        let header = row![
+            text("Keyboard Shortcuts").size(14),
+            container(
+                button(text("✕").size(12))
+                    .on_press(Message::CloseOverlay)
+                    .padding(2)
+            )
+            .width(Length::Fill)
+            .align_x(iced::Alignment::End),
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        container(column![header, shortcut_rows].spacing(8).padding(12))
+            .width(Length::Fill)
+            .max_width(500)
+            .center_x(Length::Fill)
+            .style(container::rounded_box)
+            .into()
+    }
+
+    /// Build the about overlay panel.
+    fn build_about_panel(&self) -> Element<'_, Message> {
+        let version = env!("CARGO_PKG_VERSION");
+
+        let header = row![
+            text("About mdr").size(14),
+            container(
+                button(text("✕").size(12))
+                    .on_press(Message::CloseOverlay)
+                    .padding(2)
+            )
+            .width(Length::Fill)
+            .align_x(iced::Alignment::End),
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        let info = column![
+            text(format!("mdr v{version}")).size(13),
+            text("Minimal Desktop Markdown Reader").size(12),
+            text("").size(6),
+            text("Built with iced + pulldown-cmark").size(12),
+            text("https://github.com/user/mdr").size(11),
+        ]
+        .spacing(4)
+        .padding(8);
+
+        container(column![header, info].spacing(8).padding(12))
+            .width(Length::Fill)
+            .max_width(400)
+            .center_x(Length::Fill)
+            .style(container::rounded_box)
+            .into()
     }
 
     // -----------------------------------------------------------------------
@@ -475,10 +658,11 @@ impl MdrApp {
 
     fn subscription(&self) -> Subscription<Message> {
         let search_mode = self.search_mode;
+        let has_overlay = self.overlay != Overlay::None;
 
         let keys = keyboard::listen()
-            .with(search_mode)
-            .filter_map(|(search_mode, event)| {
+            .with((search_mode, has_overlay))
+            .filter_map(|((search_mode, has_overlay), event)| {
                 let keyboard::Event::KeyPressed {
                     key,
                     modifiers,
@@ -492,59 +676,68 @@ impl MdrApp {
                     return None;
                 };
 
+                // Escape always closes overlay or search
+                if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
+                    if has_overlay {
+                        return Some(Message::CloseOverlay);
+                    }
+                    if search_mode {
+                        return Some(Message::SearchClose);
+                    }
+                    return None;
+                }
+
                 if search_mode {
-                    match &key {
-                        keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                            Some(Message::SearchClose)
-                        }
-                        _ => None,
-                    }
-                } else {
-                    match &key {
-                        keyboard::Key::Named(named) => match named {
-                            keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
-                            keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
-                            keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
-                            keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
-                            keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
-                            keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
-                            keyboard::key::Named::Escape => Some(Message::SearchClose),
-                            keyboard::key::Named::Tab => {
-                                if modifiers.shift() {
-                                    Some(Message::FocusPrevLink)
-                                } else {
-                                    Some(Message::FocusNextLink)
-                                }
-                            }
-                            keyboard::key::Named::Enter => Some(Message::ActivateLink),
-                            _ => None,
-                        },
-                        keyboard::Key::Character(c) => {
-                            let s = c.as_str();
-                            if modifiers.control() {
-                                match s {
-                                    "d" => Some(Message::ScrollBy(360.0)),
-                                    "u" => Some(Message::ScrollBy(-360.0)),
-                                    "f" => Some(Message::SearchOpen),
-                                    _ => None,
-                                }
-                            } else if modifiers.alt() {
-                                None
+                    return None;
+                }
+
+                if has_overlay {
+                    return None;
+                }
+
+                match &key {
+                    keyboard::Key::Named(named) => match named {
+                        keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
+                        keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
+                        keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
+                        keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
+                        keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
+                        keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
+                        keyboard::key::Named::Tab => {
+                            if modifiers.shift() {
+                                Some(Message::FocusPrevLink)
                             } else {
-                                match s {
-                                    "j" => Some(Message::ScrollBy(LINE_SCROLL)),
-                                    "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
-                                    "h" => Some(Message::HistoryBack),
-                                    "l" => Some(Message::HistoryForward),
-                                    "n" => Some(Message::SearchNext),
-                                    "p" => Some(Message::SearchPrev),
-                                    "/" | "?" => Some(Message::SearchOpen),
-                                    _ => None,
-                                }
+                                Some(Message::FocusNextLink)
                             }
                         }
+                        keyboard::key::Named::Enter => Some(Message::ActivateLink),
                         _ => None,
+                    },
+                    keyboard::Key::Character(c) => {
+                        let s = c.as_str();
+                        if modifiers.control() {
+                            match s {
+                                "d" => Some(Message::ScrollBy(360.0)),
+                                "u" => Some(Message::ScrollBy(-360.0)),
+                                "f" => Some(Message::SearchOpen),
+                                _ => None,
+                            }
+                        } else if modifiers.alt() {
+                            None
+                        } else {
+                            match s {
+                                "j" => Some(Message::ScrollBy(LINE_SCROLL)),
+                                "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
+                                "h" => Some(Message::HistoryBack),
+                                "l" => Some(Message::HistoryForward),
+                                "n" => Some(Message::SearchNext),
+                                "p" => Some(Message::SearchPrev),
+                                "/" | "?" => Some(Message::SearchOpen),
+                                _ => None,
+                            }
+                        }
                     }
+                    _ => None,
                 }
             });
 
@@ -1061,5 +1254,28 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].text, "`Config`");
         assert_eq!(links[0].url, "./config.md");
+    }
+
+    #[test]
+    fn theme_arg_to_theme_conversion() {
+        assert_eq!(ThemeArg::Light.to_theme(), Theme::Light);
+        assert_eq!(ThemeArg::Dark.to_theme(), Theme::Dark);
+        assert_eq!(ThemeArg::Dracula.to_theme(), Theme::Dracula);
+        assert_eq!(ThemeArg::Nord.to_theme(), Theme::Nord);
+        assert_eq!(ThemeArg::TokyoNight.to_theme(), Theme::TokyoNight);
+        assert_eq!(ThemeArg::CatppuccinMocha.to_theme(), Theme::CatppuccinMocha);
+        assert_eq!(ThemeArg::Ferra.to_theme(), Theme::Ferra);
+    }
+
+    #[test]
+    fn theme_arg_all_contains_all_variants() {
+        assert_eq!(ThemeArg::ALL.len(), 23);
+    }
+
+    #[test]
+    fn theme_arg_display() {
+        assert_eq!(ThemeArg::System.to_string(), "system");
+        assert_eq!(ThemeArg::SolarizedLight.to_string(), "solarized-light");
+        assert_eq!(ThemeArg::CatppuccinFrappe.to_string(), "catppuccin-frappe");
     }
 }
