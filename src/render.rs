@@ -1,6 +1,4 @@
-//! iced-based viewer — window creation, markdown rendering, keyboard navigation, and search.
-//!
-//! Replaces the old egui/eframe stack with iced's Elm architecture.
+//! iced-based markdown viewer — window, rendering, keyboard navigation, and search.
 //!
 //! Responsibilities:
 //! - Create a native OS window via `iced::application`.
@@ -8,10 +6,10 @@
 //! - Poll the file-watcher channel and hot-reload on changes (`--watch`).
 //! - Intercept link clicks: open external URLs in the browser, navigate local
 //!   links within the viewer.
-//! - Support vim-style navigation keys (h/j/k/l, Ctrl-U/D, arrows, PageUp/PageDown).
-//! - Browser-like navigation history: clicking links or anchors pushes to history;
-//!   h/Left (back) and l/Right (forward) traverse that history.
-//! - `/` or `?` to search, `n`/`p` to cycle through matches with highlight.
+//! - Vim-style navigation keys (j/k, Ctrl-U/D, arrows, PageUp/PageDown).
+//! - Browser-like navigation history: clicking links or anchors pushes to
+//!   history; h/Left (back) and l/Right (forward) traverse that history.
+//! - `/` or `?` to search, `n`/`p` to cycle through matches.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -30,6 +28,7 @@ use crate::ThemeArg;
 pub struct ViewerConfig {
     pub theme: ThemeArg,
     pub watch: bool,
+    /// Reserved for future use (e.g. fetching remote images).
     #[allow(dead_code)]
     pub network_enabled: bool,
 }
@@ -618,7 +617,7 @@ impl MdrApp {
 }
 
 // ---------------------------------------------------------------------------
-// Heading / slug helpers (kept for anchor navigation)
+// Heading / slug helpers
 // ---------------------------------------------------------------------------
 
 /// Generate a GitHub-style anchor slug from heading text.
