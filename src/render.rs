@@ -1,23 +1,26 @@
-//! egui/eframe viewer — window creation and markdown rendering.
+//! iced-based viewer — window creation, markdown rendering, keyboard navigation, and search.
 //!
-//! Replaces the old wry/tao/WebKit stack with an immediate-mode egui UI
-//! backed by `eframe` (wgpu renderer) and `egui_commonmark` for markdown.
+//! Replaces the old egui/eframe stack with iced's Elm architecture.
 //!
 //! Responsibilities:
-//! - Create a native OS window via `eframe`.
-//! - Render the markdown document using `egui_commonmark`.
+//! - Create a native OS window via `iced::application`.
+//! - Render the markdown document using `iced::widget::markdown`.
 //! - Poll the file-watcher channel and hot-reload on changes (`--watch`).
 //! - Intercept link clicks: open external URLs in the browser, navigate local
-//!   links within the viewer, and scroll to in-document `#anchor` fragments.
-//! - Provide a menu bar for theme selection.
+//!   links within the viewer.
 //! - Support vim-style navigation keys (h/j/k/l, Ctrl-U/D, arrows, PageUp/PageDown).
+//! - Browser-like navigation history: clicking links or anchors pushes to history;
+//!   h/Left (back) and l/Right (forward) traverse that history.
+//! - `/` or `?` to search, `n`/`p` to cycle through matches with highlight.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
-use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use iced::keyboard;
+use iced::widget::Id;
+use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
+use iced::widget::{column, container, markdown, row, scrollable, text, text_input};
+use iced::{Element, Length, Subscription, Task, Theme};
 
 use mdr::watcher;
 
@@ -27,20 +30,25 @@ use crate::ThemeArg;
 pub struct ViewerConfig {
     pub theme: ThemeArg,
     pub watch: bool,
+    #[allow(dead_code)]
     pub network_enabled: bool,
 }
+
+/// Pixels scrolled per j/k keypress.
+const LINE_SCROLL: f32 = 40.0;
+
+/// Scrollable widget ID for programmatic scrolling.
+const SCROLLABLE_ID: &str = "mdr-content-scroll";
+
+/// Text input widget ID for search bar focus.
+const SEARCH_INPUT_ID: &str = "mdr-search-input";
 
 /// Launches the viewer window and blocks until it is closed.
 ///
 /// # Errors
-/// Returns an error if the window or file reader cannot be created.
+/// Returns an error if the window cannot be created.
 pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let markdown = std::fs::read_to_string(file_path)?;
-
-    let title = format!(
-        "mdr — {}",
-        file_path.file_name().unwrap_or_default().to_string_lossy()
-    );
+    let markdown_src = std::fs::read_to_string(file_path)?;
 
     let watcher_rx: Option<Receiver<()>> = if config.watch {
         match watcher::watch_file(file_path) {
@@ -57,681 +65,561 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
         None
     };
 
-    let app = MdrApp::new(markdown, file_path.to_path_buf(), watcher_rx, config.theme);
-
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(&title)
-            .with_inner_size([960.0, 720.0])
-            // Ensure the OS draws native window decorations (title bar, borders).
-            // On Wayland this also triggers proper CSD negotiation with the compositor.
-            .with_decorations(true)
-            // Wayland app-id / X11 WM_CLASS — used by the compositor to pick the
-            // correct theme and to match .desktop files.
-            .with_app_id("mdr"),
-        ..Default::default()
-    };
-
-    let theme = config.theme;
-    let network_enabled = config.network_enabled;
-
-    eframe::run_native(
-        &title,
-        native_options,
-        Box::new(move |cc| {
-            // ── Fonts ──────────────────────────────────────────────────────
-            setup_fonts(&cc.egui_ctx);
-
-            // ── Colour scheme ──────────────────────────────────────────────
-            apply_theme(&cc.egui_ctx, theme);
-
-            // ── Image loaders ─────────────────────────────────────────────
-            // When --no-network is set we skip the HTTP loader so that remote
-            // image URLs are silently ignored rather than fetched.
-            if network_enabled {
-                egui_extras::install_image_loaders(&cc.egui_ctx);
-            } else {
-                let ctx = &cc.egui_ctx;
-                use egui_extras::loaders::{
-                    file_loader::FileLoader, image_loader::ImageCrateLoader, svg_loader::SvgLoader,
-                };
-                if !ctx.is_loader_installed(FileLoader::ID) {
-                    ctx.add_bytes_loader(std::sync::Arc::new(FileLoader::default()));
-                }
-                if !ctx.is_loader_installed(ImageCrateLoader::ID) {
-                    ctx.add_image_loader(std::sync::Arc::new(ImageCrateLoader::default()));
-                }
-                if !ctx.is_loader_installed(SvgLoader::ID) {
-                    ctx.add_image_loader(std::sync::Arc::new(SvgLoader::default()));
-                }
-            }
-
-            Ok(Box::new(app))
-        }),
-    )
-    .map_err(|e| e.to_string().into())
-}
-
-// ---------------------------------------------------------------------------
-// Theme application
-// ---------------------------------------------------------------------------
-
-/// Apply the requested theme to the egui context.
-///
-/// - `System` delegates to egui's OS-preference detection via
-///   [`egui::ThemePreference::System`], which respects the desktop's
-///   dark/light mode automatically.
-/// - `Light` / `Dark` pin egui to the built-in palettes.
-/// - `TokyoNight` / `SolarizedDark` set `ThemePreference::Dark` first
-///   (so widgets use dark defaults), then override the panel/code colours
-///   with the custom palette.
-fn apply_theme(ctx: &egui::Context, theme: ThemeArg) {
-    match theme {
-        ThemeArg::System => {
-            ctx.set_theme(egui::ThemePreference::System);
-        }
-        ThemeArg::Light => {
-            ctx.set_theme(egui::ThemePreference::Light);
-        }
-        ThemeArg::Dark => {
-            ctx.set_theme(egui::ThemePreference::Dark);
-        }
-        ThemeArg::TokyoNight => {
-            ctx.set_theme(egui::ThemePreference::Dark);
-            apply_custom_visuals(ctx, tokyo_night_visuals());
-        }
-        ThemeArg::SolarizedDark => {
-            ctx.set_theme(egui::ThemePreference::Dark);
-            apply_custom_visuals(ctx, solarized_dark_visuals());
-        }
-    }
-}
-
-/// Overlay custom `Visuals` fields on top of the dark defaults.
-/// Using `set_visuals` here is intentional: the custom themes ARE fixed
-/// palettes, not OS-adaptive, so we want to pin their colours.
-fn apply_custom_visuals(ctx: &egui::Context, visuals: egui::Visuals) {
-    ctx.set_visuals(visuals);
-}
-
-/// Tokyo Night colour palette.
-///
-/// Reference: <https://github.com/enkia/tokyo-night-vscode-theme>
-///
-/// Key hex values:
-/// - Background  `#1a1b26`  (night.background)
-/// - Surface     `#16161e`  (night.black)
-/// - Foreground  `#a9b1d6`  (night.foreground)
-/// - Blue        `#7aa2f7`
-/// - Purple      `#bb9af7`
-/// - Cyan        `#7dcfff`
-/// - Red         `#f7768e`
-/// - Yellow      `#e0af68`
-fn tokyo_night_visuals() -> egui::Visuals {
-    use egui::Color32;
-
-    let bg = Color32::from_rgb(0x1a, 0x1b, 0x26);
-    let surface = Color32::from_rgb(0x16, 0x16, 0x1e);
-    let fg = Color32::from_rgb(0xa9, 0xb1, 0xd6);
-    let blue = Color32::from_rgb(0x7a, 0xa2, 0xf7);
-    let purple = Color32::from_rgb(0xbb, 0x9a, 0xf7);
-    let subtle = Color32::from_rgb(0x24, 0x28, 0x3b); // selection/hover bg
-
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = bg;
-    v.window_fill = bg;
-    v.extreme_bg_color = surface;
-    v.code_bg_color = surface;
-    v.faint_bg_color = subtle;
-    v.hyperlink_color = blue;
-    v.selection.bg_fill = purple.gamma_multiply(0.35);
-    v.selection.stroke = egui::Stroke::new(1.0, purple);
-
-    // Widget colours — inactive, hovered, active states.
-    v.widgets.noninteractive.bg_fill = subtle;
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, fg);
-    v.widgets.inactive.bg_fill = subtle;
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, fg);
-    v.widgets.hovered.bg_fill = purple.gamma_multiply(0.25);
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, blue);
-    v.widgets.active.bg_fill = purple.gamma_multiply(0.45);
-    v.widgets.active.fg_stroke = egui::Stroke::new(2.0, blue);
-
-    v
-}
-
-/// Solarized Dark colour palette.
-///
-/// Reference: <https://ethanschoonover.com/solarized/>
-///
-/// Key hex values:
-/// - base03  `#002b36`  (darkest bg)
-/// - base02  `#073642`  (bg highlight)
-/// - base01  `#586e75`  (comments / secondary fg)
-/// - base0   `#839496`  (body text)
-/// - yellow  `#b58900`
-/// - cyan    `#2aa198`
-/// - blue    `#268bd2`
-/// - violet  `#6c71c4`
-fn solarized_dark_visuals() -> egui::Visuals {
-    use egui::Color32;
-
-    let base03 = Color32::from_rgb(0x00, 0x2b, 0x36);
-    let base02 = Color32::from_rgb(0x07, 0x36, 0x42);
-    let base0 = Color32::from_rgb(0x83, 0x94, 0x96);
-    let yellow = Color32::from_rgb(0xb5, 0x89, 0x00);
-    let cyan = Color32::from_rgb(0x2a, 0xa1, 0x98);
-    let blue = Color32::from_rgb(0x26, 0x8b, 0xd2);
-    let violet = Color32::from_rgb(0x6c, 0x71, 0xc4);
-
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = base03;
-    v.window_fill = base03;
-    v.extreme_bg_color = base02;
-    v.code_bg_color = base02;
-    v.faint_bg_color = base02;
-    v.hyperlink_color = cyan;
-    v.selection.bg_fill = blue.gamma_multiply(0.35);
-    v.selection.stroke = egui::Stroke::new(1.0, yellow);
-
-    v.widgets.noninteractive.bg_fill = base02;
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, base0);
-    v.widgets.inactive.bg_fill = base02;
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, base0);
-    v.widgets.hovered.bg_fill = violet.gamma_multiply(0.25);
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, cyan);
-    v.widgets.active.bg_fill = violet.gamma_multiply(0.45);
-    v.widgets.active.fg_stroke = egui::Stroke::new(2.0, blue);
-
-    v
-}
-
-// ---------------------------------------------------------------------------
-// Font setup
-// ---------------------------------------------------------------------------
-
-/// Name used to register the JetBrainsMonoNL Nerd Font inside egui's font registry.
-const JBMONO_FONT_NAME: &str = "JetBrainsMonoNL-NF";
-
-/// NotoEmoji v2 (outline/glyf format, ~60% emoji-block coverage).
-///
-/// egui's bundled `NotoEmoji-Regular` is v1.05 (408 KB, ~37% coverage) — it
-/// silently drops many common emoji such as 🦀 U+1F980.  We replace it by
-/// inserting our own bytes under the same font-registry key so the existing
-/// fallback lists in every `FontFamily` keep working without change.
-///
-/// **Why not `NotoColorEmoji.ttf`?**  That font stores glyphs as CBDT colour
-/// bitmaps.  epaint's rasteriser (skrifa + vello_cpu) only follows outline
-/// (`glyf`/`CFF`) code paths; CBDT and COLR tables are ignored.  Colour emoji
-/// rendering is therefore a known egui limitation upstream of this crate.
-///
-/// The font file lives in `assets/fonts/` and is baked into the binary at
-/// compile time, so it is always available regardless of the working directory.
-static NOTO_EMOJI_V2: &[u8] = include_bytes!("../assets/fonts/NotoEmoji-Regular.ttf");
-
-/// Attempt to load a TTF file from disk; returns `None` and logs a warning on failure.
-fn load_font_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            eprintln!("Warning: could not load font {}: {e}", path.display());
-            None
-        }
-    }
-}
-
-/// Configures the font stack:
-///
-/// - Replaces egui's bundled NotoEmoji v1.05 with the v2 outline build
-///   (baked in via [`NOTO_EMOJI_V2`]) which covers ~60% of the emoji block
-///   including most commonly-used symbols (🦀 😀 🔥 ✨ etc.).
-/// - Attempts to load **JetBrainsMonoNL Nerd Font** (Regular) from
-///   `~/.local/share/fonts/` and registers it as the primary face for both
-///   the `Monospace` and `Proportional` egui font families.
-/// - NotoEmoji v2 stays as the last fallback in every family so codepoints
-///   not present in the primary font fall through correctly.
-/// - Heading sizes use a tight scale relative to body so visual hierarchy is
-///   clear without the jump feeling jarring.
-fn setup_fonts(ctx: &egui::Context) {
-    use egui::{FontFamily, FontId, TextStyle};
-
-    // ── 1. Font data ────────────────────────────────────────────────────────
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Replace egui's bundled NotoEmoji v1.05 with our v2 build.
-    // Inserting under the same key overwrites the Arc<FontData> that
-    // FontDefinitions::default() already placed there, so all existing
-    // family fallback lists that reference "NotoEmoji-Regular" now point
-    // at the better font automatically.
-    fonts.font_data.insert(
-        "NotoEmoji-Regular".to_owned(),
-        egui::FontData::from_static(NOTO_EMOJI_V2)
-            .tweak(egui::FontTweak {
-                scale: 0.81, // same scale as the epaint default — keeps glyph metrics comparable
-                ..Default::default()
-            })
-            .into(),
+    let title = format!(
+        "mdr — {}",
+        file_path.file_name().unwrap_or_default().to_string_lossy()
     );
 
-    // Resolve ~/.local/share/fonts at runtime so the path works for any user.
-    let font_path = std::env::var("HOME").ok().map(|home| {
-        std::path::PathBuf::from(home)
-            .join(".local/share/fonts")
-            .join("JetBrainsMonoNLNerdFont-Regular.ttf")
-    });
+    let theme_arg = config.theme;
+    let file_path = file_path.to_path_buf();
 
-    let loaded_jbmono = font_path
-        .as_deref()
-        .and_then(load_font_bytes)
-        .map(egui::FontData::from_owned);
+    let app_state = AppInit {
+        markdown_src,
+        file_path,
+        watcher_rx,
+        theme: theme_arg,
+        title,
+    };
 
-    if let Some(font_data) = loaded_jbmono {
-        // Register the Nerd Font under our stable internal name.
-        fonts
-            .font_data
-            .insert(JBMONO_FONT_NAME.to_owned(), font_data.into());
+    // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
+    // move the one-shot init data out on the first (and only) invocation.
+    let init = std::sync::Mutex::new(Some(app_state));
 
-        // Place it first in both Proportional and Monospace families so all
-        // text — body, headings, code spans alike — renders in JBMono NF.
-        // NotoEmoji v2 remains as a fallback for codepoints the Nerd Font
-        // does not cover.
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            let list = fonts.families.entry(family).or_default();
-            list.insert(0, JBMONO_FONT_NAME.to_owned());
-        }
-    } else {
-        // Fall back to egui's bundled Hack; NotoEmoji v2 is still in place.
-        eprintln!("Info: JetBrainsMonoNL Nerd Font not found, falling back to bundled Hack.");
+    iced::application(
+        move || {
+            init.lock()
+                .unwrap()
+                .take()
+                .expect("boot called more than once")
+                .build()
+        },
+        MdrApp::update,
+        MdrApp::view,
+    )
+    .subscription(MdrApp::subscription)
+    .theme(|app: &MdrApp| app.theme())
+    .title(|app: &MdrApp| app.title.clone())
+    .window_size((960.0, 720.0))
+    .run()
+    .map_err(|e| e.to_string().into())
+}
+/// Initialization data passed into the iced application.
+struct AppInit {
+    markdown_src: String,
+    file_path: PathBuf,
+    watcher_rx: Option<Receiver<()>>,
+    theme: ThemeArg,
+    title: String,
+}
+
+impl AppInit {
+    fn build(self) -> (MdrApp, Task<Message>) {
+        let content = markdown::Content::parse(&self.markdown_src);
+        let app = MdrApp {
+            raw_markdown: self.markdown_src,
+            content,
+            file_path: self.file_path.clone(),
+            watcher_rx: self.watcher_rx,
+            active_theme: self.theme,
+            title: self.title,
+            nav_history: vec![NavEntry {
+                file_path: self.file_path,
+                scroll_y: 0.0,
+            }],
+            nav_index: 0,
+            current_scroll_y: 0.0,
+            search_mode: false,
+            search_query: String::new(),
+            search_hits: Vec::new(),
+            current_hit: None,
+        };
+        (app, Task::none())
     }
+}
 
-    // Ensure NotoEmoji v2 is the last fallback in every family so
-    // Unicode emoji codepoints get a glyph even if the primary font lacks them.
-    for list in fonts.families.values_mut() {
-        // Remove from wherever it is now (default puts it 2nd), then push to back.
-        if let Some(idx) = list.iter().position(|s| s == "NotoEmoji-Regular") {
-            list.remove(idx);
-        }
-        list.push("NotoEmoji-Regular".to_owned());
-    }
+// ---------------------------------------------------------------------------
+// Navigation history entry
+// ---------------------------------------------------------------------------
 
-    ctx.set_fonts(fonts);
+/// A single entry in the browser-like navigation history.
+///
+/// Each entry records the file being viewed and the relative scroll position
+/// (0.0 = top, 1.0 = bottom) at the time of navigation.
+#[derive(Debug, Clone)]
+struct NavEntry {
+    file_path: PathBuf,
+    scroll_y: f32,
+}
 
-    // ── 2. Text styles ──────────────────────────────────────────────────────
-    // Body and code spans use Monospace (= JBMono NF when loaded).
-    // Headings use Proportional so egui_commonmark can apply its own bold
-    // rendering; sizes are kept close to body for a calm visual rhythm.
-    //
-    // Scale: Body 15 → H3 16.5 → H2 18.5 → H1 (Heading) 21
-    let prop = FontFamily::Proportional;
-    let mono = FontFamily::Monospace;
-    let mut style = (*ctx.global_style()).clone();
-    style.text_styles = [
-        (TextStyle::Small, FontId::new(11.0, mono.clone())),
-        (TextStyle::Body, FontId::new(15.0, prop.clone())),
-        (TextStyle::Button, FontId::new(15.0, prop.clone())),
-        (TextStyle::Heading, FontId::new(21.0, prop.clone())),
-        (TextStyle::Monospace, FontId::new(14.0, mono.clone())),
-        // egui_commonmark checks for Name("Heading2") / Name("Heading3") and
-        // uses them when present, giving per-level sizing.
-        (
-            TextStyle::Name("Heading2".into()),
-            FontId::new(18.5, prop.clone()),
-        ),
-        (TextStyle::Name("Heading3".into()), FontId::new(16.5, prop)),
-    ]
-    .into();
-    ctx.set_global_style(style);
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Message {
+    LinkClicked(markdown::Uri),
+    ScrollBy(f32),
+    HistoryBack,
+    HistoryForward,
+    SearchOpen,
+    SearchClose,
+    SearchInput(String),
+    SearchSubmit,
+    SearchNext,
+    SearchPrev,
+    Tick,
+    Scrolled(scrollable::Viewport),
 }
 
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
-/// Pixels scrolled per j / k / Arrow keypress.
-const LINE_SCROLL: f32 = 40.0;
-
 struct MdrApp {
-    /// Current markdown source text.
-    markdown: String,
-    /// Path to the file on disk (for hot-reload).
+    raw_markdown: String,
+    content: markdown::Content,
     file_path: PathBuf,
-    /// Parsed/cached state used by egui_commonmark across frames.
-    cache: CommonMarkCache,
-    /// Channel to receive file-change notifications.
     watcher_rx: Option<Receiver<()>>,
-    /// Current vertical scroll position in logical pixels.
-    ///
-    /// Driven by vim-motion keys; kept in sync with the ScrollArea output so
-    /// that mouse-wheel / drag scrolling is also reflected here.
-    scroll_offset: f32,
-    /// Currently active theme (can be changed at runtime via the menu bar).
     active_theme: ThemeArg,
-    /// Markdown split at ATX heading boundaries.
-    ///
-    /// Each entry is `(slug, chunk)` where `slug` is the GitHub-style anchor
-    /// for that section's heading and `chunk` is the markdown text for that
-    /// section (heading line + body until the next heading).  The first entry
-    /// has an empty slug when there is preamble content before the first heading.
-    heading_sections: Vec<(String, String)>,
-    /// Content-space Y coordinate (in logical pixels) of each heading anchor.
-    ///
-    /// Populated during the first rendered frame and updated every frame so
-    /// that it stays accurate after font/layout changes.
-    heading_y_positions: HashMap<String, f32>,
+    title: String,
+    /// Browser-like navigation history.
+    nav_history: Vec<NavEntry>,
+    /// Current position within `nav_history`.
+    nav_index: usize,
+    /// Live scroll position (relative y offset 0.0..=1.0), updated on every scroll event.
+    current_scroll_y: f32,
+    search_mode: bool,
+    search_query: String,
+    search_hits: Vec<usize>,
+    current_hit: Option<usize>,
 }
 
 impl MdrApp {
-    fn new(
-        markdown: String,
-        file_path: PathBuf,
-        watcher_rx: Option<Receiver<()>>,
-        theme: ThemeArg,
-    ) -> Self {
-        let heading_sections = parse_heading_sections(&markdown);
-        let mut cache = CommonMarkCache::default();
-        register_anchor_hooks(&mut cache, &heading_sections);
-        Self {
-            markdown,
-            file_path,
-            cache,
-            watcher_rx,
-            scroll_offset: 0.0,
-            active_theme: theme,
-            heading_sections,
-            heading_y_positions: HashMap::new(),
+    fn theme(&self) -> Theme {
+        match self.active_theme {
+            ThemeArg::System => Theme::Light,
+            ThemeArg::Light => Theme::Light,
+            ThemeArg::Dark => Theme::Dark,
+            ThemeArg::TokyoNight => Theme::TokyoNight,
+            ThemeArg::SolarizedDark => Theme::SolarizedDark,
         }
     }
 
-    /// Load a new markdown document, replacing the current one.
-    ///
-    /// Resets the cache, re-parses headings, and re-registers anchor hooks.
-    fn load_document(&mut self, content: String, path: PathBuf) {
-        self.heading_sections = parse_heading_sections(&content);
-        self.markdown = content;
-        self.file_path = path;
-        self.cache = CommonMarkCache::default();
-        register_anchor_hooks(&mut self.cache, &self.heading_sections);
-        self.scroll_offset = 0.0;
-        self.heading_y_positions.clear();
+    // -----------------------------------------------------------------------
+    // Update
+    // -----------------------------------------------------------------------
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::LinkClicked(url) => self.handle_link(url),
+            Message::ScrollBy(delta) => {
+                operation::scroll_by(Id::new(SCROLLABLE_ID), AbsoluteOffset { x: 0.0, y: delta })
+            }
+            Message::HistoryBack => {
+                if self.nav_index == 0 {
+                    return Task::none();
+                }
+                // Save current scroll position in current entry before leaving.
+                self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
+                self.nav_index -= 1;
+                self.restore_nav_entry()
+            }
+            Message::HistoryForward => {
+                if self.nav_index + 1 >= self.nav_history.len() {
+                    return Task::none();
+                }
+                // Save current scroll position in current entry before leaving.
+                self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
+                self.nav_index += 1;
+                self.restore_nav_entry()
+            }
+            Message::SearchOpen => {
+                self.search_mode = true;
+                operation::focus(Id::new(SEARCH_INPUT_ID))
+            }
+            Message::SearchClose => {
+                self.search_mode = false;
+                self.search_query.clear();
+                self.search_hits.clear();
+                self.current_hit = None;
+                Task::none()
+            }
+            Message::SearchInput(q) => {
+                self.search_query = q;
+                self.recompute_search_hits();
+                self.scroll_to_current_hit()
+            }
+            Message::SearchSubmit => {
+                self.recompute_search_hits();
+                self.search_mode = false;
+                self.scroll_to_current_hit()
+            }
+            Message::SearchNext => {
+                if !self.search_hits.is_empty() {
+                    let next = match self.current_hit {
+                        Some(i) => (i + 1) % self.search_hits.len(),
+                        None => 0,
+                    };
+                    self.current_hit = Some(next);
+                }
+                self.scroll_to_current_hit()
+            }
+            Message::SearchPrev => {
+                if !self.search_hits.is_empty() {
+                    let prev = match self.current_hit {
+                        Some(0) => self.search_hits.len() - 1,
+                        Some(i) => i - 1,
+                        None => self.search_hits.len() - 1,
+                    };
+                    self.current_hit = Some(prev);
+                }
+                self.scroll_to_current_hit()
+            }
+            Message::Tick => {
+                self.poll_watcher();
+                Task::none()
+            }
+            Message::Scrolled(viewport) => {
+                self.current_scroll_y = viewport.relative_offset().y;
+                Task::none()
+            }
+        }
     }
 
-    /// Drain the watcher channel and reload the file if a change arrived.
+    // -----------------------------------------------------------------------
+    // View
+    // -----------------------------------------------------------------------
+    fn view(&self) -> Element<'_, Message> {
+        let settings = markdown::Settings::from(&self.theme());
+        let md_view: Element<Message> =
+            markdown::view(self.content.items(), settings).map(Message::LinkClicked);
+
+        let content_area = scrollable(
+            container(md_view)
+                .padding(20)
+                .max_width(860)
+                .center_x(Length::Fill),
+        )
+        .id(Id::new(SCROLLABLE_ID))
+        .on_scroll(Message::Scrolled)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        if self.search_mode {
+            let hit_info = if self.search_hits.is_empty() {
+                if self.search_query.is_empty() {
+                    String::new()
+                } else {
+                    "No matches".to_string()
+                }
+            } else {
+                let idx = self.current_hit.map_or(0, |i| i + 1);
+                format!("{}/{}", idx, self.search_hits.len())
+            };
+
+            let search_bar = container(
+                row![
+                    text("/").size(14),
+                    text_input("Search...", &self.search_query)
+                        .id(Id::new(SEARCH_INPUT_ID))
+                        .on_input(Message::SearchInput)
+                        .on_submit(Message::SearchSubmit)
+                        .width(Length::Fill)
+                        .size(14),
+                    text(hit_info).size(12),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding(6)
+            .width(Length::Fill);
+
+            column![search_bar, content_area].into()
+        } else {
+            content_area.into()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Subscription
+    // -----------------------------------------------------------------------
+
+    fn subscription(&self) -> Subscription<Message> {
+        let search_mode = self.search_mode;
+
+        let keys = keyboard::listen()
+            .with(search_mode)
+            .filter_map(|(search_mode, event)| {
+                let keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    text: _,
+                    modified_key: _,
+                    physical_key: _,
+                    location: _,
+                    repeat: _,
+                } = event
+                else {
+                    return None;
+                };
+
+                if search_mode {
+                    match &key {
+                        keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                            Some(Message::SearchClose)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    match &key {
+                        keyboard::Key::Named(named) => match named {
+                            keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
+                            keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
+                            keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
+                            keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
+                            keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
+                            keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
+                            keyboard::key::Named::Escape => Some(Message::SearchClose),
+                            _ => None,
+                        },
+                        keyboard::Key::Character(c) => {
+                            let s = c.as_str();
+                            if modifiers.control() {
+                                match s {
+                                    "d" => Some(Message::ScrollBy(360.0)),
+                                    "u" => Some(Message::ScrollBy(-360.0)),
+                                    _ => None,
+                                }
+                            } else if modifiers.alt() {
+                                None
+                            } else {
+                                match s {
+                                    "j" => Some(Message::ScrollBy(LINE_SCROLL)),
+                                    "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
+                                    "h" => Some(Message::HistoryBack),
+                                    "l" => Some(Message::HistoryForward),
+                                    "n" => Some(Message::SearchNext),
+                                    "p" => Some(Message::SearchPrev),
+                                    "/" | "?" => Some(Message::SearchOpen),
+                                    _ => None,
+                                }
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+            });
+
+        let ticker =
+            iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick);
+
+        Subscription::batch([keys, ticker])
+    }
+
+    // -----------------------------------------------------------------------
+    // Navigation history helpers
+    // -----------------------------------------------------------------------
+
+    /// Push a new navigation entry, truncating any forward history.
+    ///
+    /// Before pushing, saves the current scroll position into the current entry.
+    fn push_nav(&mut self, file_path: PathBuf, scroll_y: f32) {
+        // Update the current entry with our live scroll position.
+        self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
+        // Discard any forward history (browser semantics).
+        self.nav_history.truncate(self.nav_index + 1);
+        // Push the new destination.
+        self.nav_history.push(NavEntry {
+            file_path,
+            scroll_y,
+        });
+        self.nav_index = self.nav_history.len() - 1;
+    }
+
+    /// Restore the view to the entry at `nav_index`.
+    ///
+    /// Loads the file if it differs from the current file, then snaps the
+    /// scrollable to the recorded scroll position.
+    fn restore_nav_entry(&mut self) -> Task<Message> {
+        let entry = self.nav_history[self.nav_index].clone();
+        if entry.file_path != self.file_path {
+            self.load_file(&entry.file_path);
+        }
+        let offset = RelativeOffset {
+            x: 0.0,
+            y: entry.scroll_y,
+        };
+        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
+    }
+
+    // -----------------------------------------------------------------------
+    // Link / file helpers
+    // -----------------------------------------------------------------------
+
+    fn handle_link(&mut self, url: String) -> Task<Message> {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            let _ = open::that(&url);
+            return Task::none();
+        }
+
+        if let Some(anchor) = url.strip_prefix('#') {
+            return self.navigate_to_anchor(anchor);
+        }
+
+        // Local file link
+        let raw = url.strip_prefix("file://").unwrap_or(&url);
+        let target = if Path::new(raw).is_absolute() {
+            PathBuf::from(raw)
+        } else {
+            let base = self.file_path.parent().unwrap_or(Path::new("."));
+            base.join(raw)
+        };
+
+        if target.exists() && target.is_file() {
+            self.push_nav(target.clone(), 0.0);
+            self.load_file(&target);
+            operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 })
+        } else {
+            eprintln!("Warning: could not open '{}'", target.display());
+            Task::none()
+        }
+    }
+
+    /// Navigate to an in-document anchor and push to navigation history.
+    fn navigate_to_anchor(&mut self, anchor: &str) -> Task<Message> {
+        if let Some(target_y) = self.compute_anchor_y(anchor) {
+            self.push_nav(self.file_path.clone(), target_y);
+            let offset = RelativeOffset {
+                x: 0.0,
+                y: target_y,
+            };
+            operation::snap_to(Id::new(SCROLLABLE_ID), offset)
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Compute the relative scroll y-position for a given anchor.
+    ///
+    /// Returns `None` if the anchor cannot be matched to any heading.
+    fn compute_anchor_y(&self, anchor: &str) -> Option<f32> {
+        use std::collections::HashMap;
+
+        let total_lines = self.raw_markdown.lines().count() as f32;
+        if total_lines <= 0.0 {
+            return None;
+        }
+
+        let target_anchor = anchor.to_lowercase();
+
+        // Pass 1: exact slug match using GitHub-style slug generation
+        let mut seen: HashMap<String, u32> = HashMap::new();
+
+        for (i, line) in self.raw_markdown.lines().enumerate() {
+            if let Some(heading_text) = extract_atx_heading(line) {
+                let slug = github_slug(heading_text, &mut seen);
+                let slug_bare = slug.strip_prefix('#').unwrap_or(&slug);
+                if slug_bare == target_anchor {
+                    return Some((i as f32) / total_lines);
+                }
+            }
+        }
+
+        // Pass 2: relaxed match — strip everything except ascii-alphanumeric
+        let anchor_normalized = normalize_for_match(&target_anchor);
+        if anchor_normalized.is_empty() {
+            return None;
+        }
+
+        for (i, line) in self.raw_markdown.lines().enumerate() {
+            if let Some(heading_text) = extract_atx_heading(line) {
+                let heading_normalized =
+                    normalize_for_match(&heading_text.replace('`', "").to_lowercase());
+                if heading_normalized == anchor_normalized {
+                    return Some((i as f32) / total_lines);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn load_file(&mut self, path: &Path) {
+        match std::fs::read_to_string(path) {
+            Ok(src) => {
+                self.raw_markdown = src;
+                self.content = markdown::Content::parse(&self.raw_markdown);
+                self.file_path = path.to_path_buf();
+                self.title = format!(
+                    "mdr — {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.search_hits.clear();
+                self.current_hit = None;
+            }
+            Err(e) => eprintln!("Warning: could not read '{}': {e}", path.display()),
+        }
+    }
+
     fn poll_watcher(&mut self) {
         let Some(ref rx) = self.watcher_rx else {
             return;
         };
         if rx.try_recv().is_ok() {
-            // Drain duplicates.
             while rx.try_recv().is_ok() {}
             match std::fs::read_to_string(&self.file_path) {
                 Ok(new_content) => {
-                    let path = self.file_path.clone();
-                    self.load_document(new_content, path);
+                    self.raw_markdown = new_content;
+                    self.content = markdown::Content::parse(&self.raw_markdown);
                 }
                 Err(e) => eprintln!("Warning: could not reload file: {e}"),
             }
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// eframe::App implementation
-// ---------------------------------------------------------------------------
-impl eframe::App for MdrApp {
-    /// The wgpu surface clear color — must match the active theme's window fill
-    /// so that the dark default (12, 12, 12) eframe uses does not bleed through
-    /// the transparent root [`egui::Ui`] that [`Self::ui`] receives.
-    ///
-    /// Without this override, `--theme light` produces white egui widgets but
-    /// a near-black background because eframe's default `clear_color` ignores
-    /// the `visuals` argument it receives.
-    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        visuals.window_fill().to_normalized_gamma_f32()
-    }
+    fn recompute_search_hits(&mut self) {
+        self.search_hits.clear();
+        self.current_hit = None;
 
-    /// Called each frame for non-UI work: poll the watcher and schedule
-    /// the next repaint so hot-reload feels responsive.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_watcher();
-        // Re-check every 500 ms even if the OS didn't push a watcher event
-        // (handles editors that write via rename/replace).
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
-    }
-
-    /// Called each frame to paint the UI.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // ── Menu bar ──────────────────────────────────────────────────────
-        egui::Panel::top("menubar").show_inside(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Theme", |ui| {
-                    const THEMES: &[(ThemeArg, &str)] = &[
-                        (ThemeArg::System, "System"),
-                        (ThemeArg::Light, "Light"),
-                        (ThemeArg::Dark, "Dark"),
-                        (ThemeArg::TokyoNight, "Tokyo Night"),
-                        (ThemeArg::SolarizedDark, "Solarized Dark"),
-                    ];
-                    for &(theme, label) in THEMES {
-                        if ui
-                            .add(egui::Button::selectable(self.active_theme == theme, label))
-                            .clicked()
-                        {
-                            self.active_theme = theme;
-                            apply_theme(ui.ctx(), theme);
-                            ui.close();
-                        }
-                    }
-                });
-            });
-        });
-
-        // ── Vim-motion keyboard navigation ────────────────────────────────
-        let half_page = ui
-            .ctx()
-            .input(|i| i.viewport().inner_rect.map_or(360.0, |r| r.height() / 2.0));
-
-        ui.ctx().input_mut(|i| {
-            // j / l / ArrowDown — scroll down one line
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::L)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-            {
-                self.scroll_offset += LINE_SCROLL;
-            }
-            // k / h / ArrowUp — scroll up one line
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-            {
-                self.scroll_offset -= LINE_SCROLL;
-            }
-            // Ctrl-D / PageDown — scroll down half a page
-            if i.consume_key(egui::Modifiers::CTRL, egui::Key::D)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::PageDown)
-            {
-                self.scroll_offset += half_page;
-            }
-            // Ctrl-U / PageUp — scroll up half a page
-            if i.consume_key(egui::Modifiers::CTRL, egui::Key::U)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::PageUp)
-            {
-                self.scroll_offset -= half_page;
-            }
-        });
-
-        self.scroll_offset = self.scroll_offset.max(0.0);
-
-        // ── Markdown content ──────────────────────────────────────────────
-        //
-        // The document is split at ATX-heading boundaries so we can record
-        // the content-space Y of each section before rendering it.  If an
-        // anchor link was clicked this frame we update `scroll_offset` to
-        // jump to that heading.
-        let mut clicked_anchor: Option<String> = None;
-
-        let scroll_output = egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .vertical_scroll_offset(self.scroll_offset)
-            .show(ui, |ui| {
-                ui.set_max_width(860.0);
-
-                // Y of the very first widget inside the ScrollArea (content space).
-                // Because egui positions content at inner_rect.min - state.offset,
-                // all widget positions inside this closure are already in content
-                // coordinates — no manual scroll_offset addition is needed.
-                let origin_y = ui.next_widget_position().y;
-
-                for (index, (slug, chunk)) in self.heading_sections.iter().enumerate() {
-                    // Record content-space Y before rendering this section.
-                    let screen_y_before = ui.next_widget_position().y;
-                    let content_y = screen_y_before - origin_y;
-                    if !slug.is_empty() {
-                        self.heading_y_positions.insert(slug.clone(), content_y);
-                    }
-
-                    // Each chunk gets its own ID namespace so that widgets
-                    // rendered by CommonMarkViewer::show() don't clash across
-                    // chunks (egui would warn "multiple uses of the same ID").
-                    ui.push_id(index, |ui| {
-                        CommonMarkViewer::new().show_alt_text_on_hover(true).show(
-                            ui,
-                            &mut self.cache,
-                            chunk,
-                        );
-
-                        // Peek at link hooks after this chunk's render, before the
-                        // next show() call resets them via prepare_show().
-                        for (hook_slug, &activated) in self.cache.link_hooks() {
-                            if activated {
-                                clicked_anchor = Some(hook_slug.clone());
-                            }
-                        }
-                    });
-                }
-            });
-
-        // Keep our stored offset in sync with whatever the ScrollArea settled
-        // on (mouse-wheel, drag, and clamping to content bounds all adjust it).
-        self.scroll_offset = scroll_output.state.offset.y;
-
-        // If a heading anchor was clicked, jump to it.
-        if let Some(ref slug) = clicked_anchor
-            && let Some(&target_y) = self.heading_y_positions.get(slug)
-        {
-            self.scroll_offset = target_y;
+        if self.search_query.is_empty() {
+            return;
         }
 
-        // ── Link handling ─────────────────────────────────────────────────
-        // Drain every OutputCommand that egui_commonmark queued this frame.
-        //
-        // Routing logic:
-        //   • http:// / https:// → open in the system browser.
-        //   • Local paths (relative or file://) → resolve against the current
-        //     file's directory, load the new markdown, reset state.
-        //   • Fragment-only (#anchor) → handled via link_hooks above;
-        //     drop to prevent egui-winit from forwarding them to the browser.
-        //   • Any other OpenUrl (mailto:, unknown scheme) → drop silently.
-        //   • Non-OpenUrl commands (CopyText, CopyImage) → re-queue so egui
-        //     can process them normally.
-        let commands: Vec<_> = ui.ctx().output_mut(|o| std::mem::take(&mut o.commands));
-        for cmd in commands {
-            match cmd {
-                egui::OutputCommand::OpenUrl(ref open_url)
-                    if open_url.url.starts_with("http://")
-                        || open_url.url.starts_with("https://") =>
-                {
-                    let _ = open::that(&open_url.url);
-                }
-                egui::OutputCommand::OpenUrl(ref open_url) if !open_url.url.starts_with('#') => {
-                    // Resolve the target path relative to the directory that
-                    // contains the currently-displayed file.
-                    let raw = open_url
-                        .url
-                        .strip_prefix("file://")
-                        .unwrap_or(&open_url.url);
-                    let target = if std::path::Path::new(raw).is_absolute() {
-                        PathBuf::from(raw)
-                    } else {
-                        let base = self.file_path.parent().unwrap_or(std::path::Path::new("."));
-                        base.join(raw)
-                    };
-                    match std::fs::read_to_string(&target) {
-                        Ok(content) => {
-                            self.load_document(content, target);
-                        }
-                        Err(e) => eprintln!("Warning: could not open '{}': {e}", target.display()),
-                    }
-                }
-                // Fragment anchors (#section) are handled via link_hooks above;
-                // drop to prevent egui-winit from forwarding them to the browser.
-                egui::OutputCommand::OpenUrl(_) => {}
-                // Re-queue non-URL commands (clipboard, etc.) for normal processing.
-                other => {
-                    ui.ctx().output_mut(|o| o.commands.push(other));
-                }
+        let query_lower = self.search_query.to_lowercase();
+
+        for (i, line) in self.raw_markdown.lines().enumerate() {
+            if line.to_lowercase().contains(&query_lower) {
+                self.search_hits.push(i);
             }
         }
+
+        if !self.search_hits.is_empty() {
+            self.current_hit = Some(0);
+        }
+    }
+
+    fn scroll_to_current_hit(&self) -> Task<Message> {
+        let Some(hit_idx) = self.current_hit else {
+            return Task::none();
+        };
+        let Some(&line_num) = self.search_hits.get(hit_idx) else {
+            return Task::none();
+        };
+
+        let total_lines = self.raw_markdown.lines().count() as f32;
+        if total_lines <= 0.0 {
+            return Task::none();
+        }
+
+        let ratio = (line_num as f32) / total_lines;
+        let offset = RelativeOffset { x: 0.0, y: ratio };
+        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Anchor / heading helpers
+// Heading / slug helpers (kept for anchor navigation)
 // ---------------------------------------------------------------------------
-
-/// Split `markdown` at ATX-heading boundaries.
-///
-/// Returns a list of `(slug, chunk)` pairs:
-/// - The first entry may have an empty slug when there is preamble content
-///   before the first heading.
-/// - Every subsequent entry has a GitHub-style slug derived from the heading
-///   text and carries the heading line plus its body text.
-///
-/// Only ATX headings (lines starting with one to six `#` characters followed
-/// by a space) are detected.  Setext-style headings are ignored.
-fn parse_heading_sections(markdown: &str) -> Vec<(String, String)> {
-    let mut sections: Vec<(String, String)> = Vec::new();
-    let mut current_chunk = String::new();
-    let mut current_slug = String::new();
-    let mut slug_counts: HashMap<String, u32> = HashMap::new();
-
-    for line in markdown.lines() {
-        if let Some(heading_text) = extract_atx_heading(line) {
-            // Flush the previous section.
-            if !current_chunk.is_empty() || !current_slug.is_empty() {
-                sections.push((current_slug.clone(), current_chunk.clone()));
-            }
-            current_slug = github_slug(heading_text, &mut slug_counts);
-            current_chunk = format!("{line}\n");
-        } else {
-            current_chunk.push_str(line);
-            current_chunk.push('\n');
-        }
-    }
-    // Push the final section.
-    if !current_chunk.is_empty() {
-        sections.push((current_slug, current_chunk));
-    }
-    sections
-}
-
-/// Extract the heading text from an ATX heading line, or `None` if the line
-/// is not an ATX heading.
-///
-/// ATX heading: 1–6 `#` characters, a single space, then the heading text.
-/// Optional trailing ` ###...` is stripped per the CommonMark spec.
-fn extract_atx_heading(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start_matches('#');
-    let hashes = line.len() - trimmed.len();
-    if hashes == 0 || hashes > 6 {
-        return None;
-    }
-    let rest = trimmed.strip_prefix(' ')?;
-    // Strip optional closing sequence: trailing whitespace + `#`s + whitespace.
-    let text = rest.trim_end().trim_end_matches('#').trim_end_matches(' ');
-    // An empty heading text is valid but produces a slug of "".
-    // We still return Some so the section boundary is recorded.
-    Some(if text.is_empty() { rest.trim() } else { text })
-}
 
 /// Generate a GitHub-style anchor slug from heading text.
 ///
@@ -742,7 +630,7 @@ fn extract_atx_heading(line: &str) -> Option<&str> {
 ///    or underscore.
 /// 4. Replace spaces with hyphens (consecutive hyphens are preserved).
 /// 5. Deduplicate: second occurrence gets suffix `-1`, third gets `-2`, etc.
-fn github_slug(text: &str, seen: &mut HashMap<String, u32>) -> String {
+fn github_slug(text: &str, seen: &mut std::collections::HashMap<String, u32>) -> String {
     let base: String = text
         .replace('`', "")
         .to_lowercase()
@@ -758,26 +646,30 @@ fn github_slug(text: &str, seen: &mut HashMap<String, u32>) -> String {
         format!("{base}-{}", *count - 1)
     };
     *count += 1;
-    // Prepend '#' to match the format egui_commonmark uses for fragment links.
     format!("#{slug}")
 }
-
-/// Register all non-empty anchor slugs from `sections` as link hooks in `cache`.
-///
-/// This must be called once after loading a document and after resetting the
-/// cache so that fragment links in the rendered markdown are intercepted by
-/// egui_commonmark rather than emitted as `OutputCommand::OpenUrl`.
-fn register_anchor_hooks(cache: &mut CommonMarkCache, sections: &[(String, String)]) {
-    for (slug, _) in sections {
-        if !slug.is_empty() {
-            cache.add_link_hook(slug.as_str());
-        }
+/// Extract the heading text from an ATX heading line, or `None` if the line
+/// is not a valid ATX heading.
+fn extract_atx_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start_matches('#');
+    let hashes = line.len() - trimmed.len();
+    if hashes == 0 || hashes > 6 {
+        return None;
     }
+    let rest = trimmed.strip_prefix(' ')?;
+    let text = rest.trim_end().trim_end_matches('#').trim_end_matches(' ');
+    Some(if text.is_empty() { rest.trim() } else { text })
+}
+
+/// Strips everything except ASCII alphanumeric characters for fuzzy anchor comparison.
+fn normalize_for_match(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn slug_simple_heading() {
@@ -855,5 +747,25 @@ mod tests {
     #[test]
     fn extract_atx_heading_trailing_hashes() {
         assert_eq!(extract_atx_heading("## Title ##"), Some("Title"));
+    }
+
+    #[test]
+    fn normalize_strips_non_alphanumeric() {
+        assert_eq!(normalize_for_match("severity-legend"), "severitylegend");
+        assert_eq!(
+            normalize_for_match("i-1--heaperror-success--success-state-inside-an-error-enum"),
+            "i1heaperrorsuccesssuccessstateinsideanerrorenum"
+        );
+    }
+
+    #[test]
+    fn anchor_match_relaxed_handles_nonstandard_slug() {
+        let heading =
+            "I-1 \u{1f534} `HeapError::Success` \u{2014} success state inside an error enum";
+        let anchor = "i-1--heaperror-success--success-state-inside-an-error-enum";
+
+        let anchor_normalized = normalize_for_match(&anchor.to_lowercase());
+        let heading_normalized = normalize_for_match(&heading.replace('`', "").to_lowercase());
+        assert_eq!(anchor_normalized, heading_normalized);
     }
 }

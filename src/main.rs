@@ -68,8 +68,8 @@ impl ThemeArg {
     fn description(self) -> &'static str {
         match self {
             Self::System => "Follow OS dark/light preference",
-            Self::Light => "Egui built-in light theme",
-            Self::Dark => "Egui built-in dark theme",
+            Self::Light => "Light theme",
+            Self::Dark => "Dark theme",
             Self::TokyoNight => "Tokyo Night — dark, purple/blue accents",
             Self::SolarizedDark => "Solarized Dark — base03 bg, yellow/cyan accents",
         }
