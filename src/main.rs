@@ -3,6 +3,7 @@
 mod render;
 
 use clap::Parser;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use render::ViewerConfig;
@@ -11,8 +12,8 @@ use render::ViewerConfig;
 #[derive(Parser, Debug)]
 #[command(name = "mdr", version, about)]
 struct Cli {
-    /// Path to the markdown file to view. Not required when --list-themes is used.
-    #[arg(value_name = "FILE", required_unless_present = "list_themes")]
+    /// Path to the markdown file to view. Optional when reading from stdin pipe.
+    #[arg(value_name = "FILE")]
     file: Option<PathBuf>,
 
     /// Watch the file for changes and auto-reload.
@@ -251,32 +252,6 @@ fn main() {
         return;
     }
 
-    // FILE is required_unless_present = "list_themes", so unwrap is safe here.
-    let file = cli
-        .file
-        .expect("FILE is required when --list-themes is not set");
-
-    if !file.exists() {
-        eprintln!("Error: file not found: {}", file.display());
-        std::process::exit(1);
-    }
-
-    if !file.is_file() {
-        eprintln!("Error: not a file: {}", file.display());
-        std::process::exit(1);
-    }
-
-    if let Some(ext) = file.extension() {
-        let ext_lower = ext.to_string_lossy().to_lowercase();
-        if !matches!(ext_lower.as_str(), "md" | "markdown" | "mdown" | "mkd") {
-            eprintln!(
-                "Warning: {} doesn't look like a markdown file (extension: .{})",
-                file.display(),
-                ext_lower
-            );
-        }
-    }
-
     let config = ViewerConfig {
         theme: cli.theme,
         watch: cli.watch,
@@ -289,8 +264,57 @@ fn main() {
         return;
     }
 
-    if let Err(e) = render::launch(&file, &config) {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+    // Determine input source: file argument or stdin pipe
+    let stdin_is_pipe = !std::io::stdin().is_terminal();
+
+    match cli.file {
+        Some(file) => {
+            if !file.exists() {
+                eprintln!("Error: file not found: {}", file.display());
+                std::process::exit(1);
+            }
+
+            if !file.is_file() {
+                eprintln!("Error: not a file: {}", file.display());
+                std::process::exit(1);
+            }
+
+            if let Some(ext) = file.extension() {
+                let ext_lower = ext.to_string_lossy().to_lowercase();
+                if !matches!(ext_lower.as_str(), "md" | "markdown" | "mdown" | "mkd") {
+                    eprintln!(
+                        "Warning: {} doesn't look like a markdown file (extension: .{})",
+                        file.display(),
+                        ext_lower
+                    );
+                }
+            }
+
+            if let Err(e) = render::launch(&file, &config) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        None if stdin_is_pipe => {
+            use std::io::Read;
+            let mut content = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut content) {
+                eprintln!("Error reading stdin: {e}");
+                std::process::exit(1);
+            }
+            if content.is_empty() {
+                eprintln!("Error: no input received from stdin");
+                std::process::exit(1);
+            }
+            if let Err(e) = render::launch_stdin(content, &config) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        None => {
+            eprintln!("Error: no FILE argument and stdin is not a pipe");
+            eprintln!("Usage: mdr <FILE> or pipe markdown to mdr");
+            std::process::exit(1);
+        }
     }
 }

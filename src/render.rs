@@ -126,6 +126,53 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
     .run()
     .map_err(|e| e.to_string().into())
 }
+
+/// Launches the viewer window with content read from stdin.
+///
+/// Behaves identically to [`launch`] but does not require a file path.
+/// File watching is not available in this mode.
+///
+/// # Errors
+/// Returns an error if the window cannot be created.
+pub fn launch_stdin(
+    content: String,
+    config: &ViewerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let title = String::from("mdr \u{2014} stdin");
+    // Use cwd so relative links in the document resolve against the invoking directory.
+    let file_path = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("stdin");
+
+    let app_state = AppInit {
+        markdown_src: content,
+        file_path,
+        watcher_rx: None,
+        theme: config.theme,
+        title,
+    };
+
+    let init = std::sync::Mutex::new(Some(app_state));
+
+    iced::application(
+        move || {
+            init.lock()
+                .unwrap()
+                .take()
+                .expect("boot called more than once")
+                .build()
+        },
+        MdrApp::update,
+        MdrApp::view,
+    )
+    .subscription(MdrApp::subscription)
+    .theme(|app: &MdrApp| app.active_theme.to_theme())
+    .title(|app: &MdrApp| app.title.clone())
+    .window_size((960.0, 720.0))
+    .run()
+    .map_err(|e| e.to_string().into())
+}
+
 /// Initialization data passed into the iced application.
 struct AppInit {
     markdown_src: String,
@@ -613,18 +660,6 @@ impl MdrApp {
 
         // Assemble the full layout
         let mut layout = column![];
-
-        // --- Header bar showing file name ---
-        let file_name = self
-            .file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let header_bar = container(text(file_name).size(13))
-            .padding([4, 8])
-            .width(Length::Fill)
-            .style(container::rounded_box);
-        layout = layout.push(header_bar);
 
         if let Some(bar) = search_bar {
             layout = layout.push(bar);
