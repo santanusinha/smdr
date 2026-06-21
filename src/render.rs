@@ -15,11 +15,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
+use iced::border;
 use iced::keyboard;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
-use iced::widget::{column, container, markdown, row, scrollable, text, text_input};
-use iced::{Element, Length, Pixels, Subscription, Task, Theme};
+use iced::widget::{column, container, markdown, rich_text, row, scrollable, text, text_input};
+use iced::{Background, Color, Element, Length, Pixels, Renderer, Subscription, Task, Theme};
 
 use mdr::watcher;
 
@@ -359,7 +360,24 @@ impl MdrApp {
     // -----------------------------------------------------------------------
     fn view(&self) -> Element<'_, Message> {
         let theme = self.theme();
-        let style = markdown::Style::from(&theme);
+        let is_dark = theme.extended_palette().is_dark;
+        let mut style = markdown::Style::from(&theme);
+
+        // Theme-adaptive inline code styling (replaces harsh #111111 default)
+        if is_dark {
+            style.inline_code_highlight = markdown::Highlight {
+                background: Background::Color(Color::from_rgb(0.18, 0.20, 0.25)),
+                border: border::rounded(4),
+            };
+            style.inline_code_color = Color::from_rgb(0.85, 0.87, 0.91);
+        } else {
+            style.inline_code_highlight = markdown::Highlight {
+                background: Background::Color(Color::from_rgb(0.91, 0.92, 0.94)),
+                border: border::rounded(4),
+            };
+            style.inline_code_color = Color::from_rgb(0.15, 0.16, 0.18);
+        }
+
         let settings = markdown::Settings {
             text_size: Pixels(16.0),
             h1_size: Pixels(24.0),
@@ -372,8 +390,9 @@ impl MdrApp {
             spacing: Pixels(14.0),
             style,
         };
+        let viewer = MdrViewer;
         let md_view: Element<Message> =
-            markdown::view(self.content.items(), settings).map(Message::LinkClicked);
+            markdown::view_with(self.content.items(), settings, &viewer).map(Message::LinkClicked);
 
         let content_area = scrollable(
             container(md_view)
@@ -751,9 +770,52 @@ impl MdrApp {
 }
 
 // ---------------------------------------------------------------------------
-// Link extraction (using pulldown-cmark)
+// Custom Viewer for theme-adaptive code block styling
 // ---------------------------------------------------------------------------
 
+/// Custom markdown viewer that overrides code block rendering to use a
+/// theme-adaptive background instead of the default hardcoded dark style.
+struct MdrViewer;
+
+impl<'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer {
+    fn on_link_click(url: markdown::Uri) -> markdown::Uri {
+        url
+    }
+
+    fn code_block(
+        &self,
+        settings: markdown::Settings,
+        _language: Option<&'a str>,
+        _code: &'a str,
+        lines: &'a [markdown::Text],
+    ) -> Element<'a, markdown::Uri, Theme, Renderer> {
+        container(
+            scrollable(
+                container(column(lines.iter().map(|line| {
+                    rich_text(line.spans(settings.style))
+                        .on_link_click(Self::on_link_click)
+                        .font(settings.style.code_block_font)
+                        .size(settings.code_size)
+                        .into()
+                })))
+                .padding(settings.code_size),
+            )
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::default()
+                    .width(settings.code_size / 2)
+                    .scroller_width(settings.code_size / 2),
+            )),
+        )
+        .width(Length::Fill)
+        .padding(settings.code_size / 4)
+        .style(container::rounded_box)
+        .into()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Link extraction (using pulldown-cmark)
+// ---------------------------------------------------------------------------
 /// Extract all links from the markdown source with their line positions.
 fn extract_links(source: &str) -> Vec<DocumentLink> {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
