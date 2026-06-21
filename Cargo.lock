@@ -1873,6 +1873,7 @@ dependencies = [
  "notify",
  "open",
  "predicates",
+ "pulldown-cmark",
  "tempfile",
 ]
 

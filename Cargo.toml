@@ -6,10 +6,11 @@ description = "A minimal desktop markdown reader"
 license = "MIT"
 
 [dependencies]
-clap   = { version = "4", features = ["derive"] }
-notify = "9.0.0-rc.4"
-open   = "5"
-iced   = { version = "0.14", features = ["markdown", "highlighter", "tokio", "wgpu", "wayland", "x11"] }
+clap           = { version = "4", features = ["derive"] }
+notify         = "9.0.0-rc.4"
+open           = "5"
+iced           = { version = "0.14", features = ["markdown", "highlighter", "tokio", "wgpu", "wayland", "x11"] }
+pulldown-cmark = "0.12"
 
 [dev-dependencies]
 assert_cmd = "2"

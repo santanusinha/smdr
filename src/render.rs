@@ -9,6 +9,7 @@
 //! - Vim-style navigation keys (j/k, Ctrl-U/D, arrows, PageUp/PageDown).
 //! - Browser-like navigation history: clicking links or anchors pushes to
 //!   history; h/Left (back) and l/Right (forward) traverse that history.
+//! - Tab/Shift-Tab to cycle through document links, Enter to activate.
 //! - `/` or `?` to search, `n`/`p` to cycle through matches.
 
 use std::path::{Path, PathBuf};
@@ -113,6 +114,7 @@ struct AppInit {
 
 impl AppInit {
     fn build(self) -> (MdrApp, Task<Message>) {
+        let links = extract_links(&self.markdown_src);
         let content = markdown::Content::parse(&self.markdown_src);
         let app = MdrApp {
             raw_markdown: self.markdown_src,
@@ -127,6 +129,8 @@ impl AppInit {
             }],
             nav_index: 0,
             current_scroll_y: 0.0,
+            links,
+            focused_link: None,
             search_mode: false,
             search_query: String::new(),
             search_hits: Vec::new(),
@@ -151,6 +155,21 @@ struct NavEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Document link (for Tab navigation)
+// ---------------------------------------------------------------------------
+
+/// A link found in the markdown document, used for keyboard-only navigation.
+#[derive(Debug, Clone)]
+struct DocumentLink {
+    /// Source line number (0-based) where the link appears.
+    line: usize,
+    /// The link destination URL/path.
+    url: String,
+    /// Display text of the link.
+    text: String,
+}
+
+// ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
 
@@ -160,6 +179,9 @@ enum Message {
     ScrollBy(f32),
     HistoryBack,
     HistoryForward,
+    FocusNextLink,
+    FocusPrevLink,
+    ActivateLink,
     SearchOpen,
     SearchClose,
     SearchInput(String),
@@ -187,6 +209,10 @@ struct MdrApp {
     nav_index: usize,
     /// Live scroll position (relative y offset 0.0..=1.0), updated on every scroll event.
     current_scroll_y: f32,
+    /// All links in the current document (for Tab navigation).
+    links: Vec<DocumentLink>,
+    /// Currently focused link index (Tab stop), or `None` if no link is focused.
+    focused_link: Option<usize>,
     search_mode: bool,
     search_query: String,
     search_hits: Vec<usize>,
@@ -212,13 +238,14 @@ impl MdrApp {
         match message {
             Message::LinkClicked(url) => self.handle_link(url),
             Message::ScrollBy(delta) => {
+                self.focused_link = None;
                 operation::scroll_by(Id::new(SCROLLABLE_ID), AbsoluteOffset { x: 0.0, y: delta })
             }
             Message::HistoryBack => {
                 if self.nav_index == 0 {
                     return Task::none();
                 }
-                // Save current scroll position in current entry before leaving.
+                self.focused_link = None;
                 self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
                 self.nav_index -= 1;
                 self.restore_nav_entry()
@@ -227,12 +254,44 @@ impl MdrApp {
                 if self.nav_index + 1 >= self.nav_history.len() {
                     return Task::none();
                 }
-                // Save current scroll position in current entry before leaving.
+                self.focused_link = None;
                 self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
                 self.nav_index += 1;
                 self.restore_nav_entry()
             }
+            Message::FocusNextLink => {
+                if self.links.is_empty() {
+                    return Task::none();
+                }
+                let next = match self.focused_link {
+                    Some(i) => (i + 1) % self.links.len(),
+                    None => 0,
+                };
+                self.focused_link = Some(next);
+                self.scroll_to_link(next)
+            }
+            Message::FocusPrevLink => {
+                if self.links.is_empty() {
+                    return Task::none();
+                }
+                let prev = match self.focused_link {
+                    Some(0) => self.links.len() - 1,
+                    Some(i) => i - 1,
+                    None => self.links.len() - 1,
+                };
+                self.focused_link = Some(prev);
+                self.scroll_to_link(prev)
+            }
+            Message::ActivateLink => {
+                let Some(idx) = self.focused_link else {
+                    return Task::none();
+                };
+                let url = self.links[idx].url.clone();
+                self.focused_link = None;
+                self.handle_link(url)
+            }
             Message::SearchOpen => {
+                self.focused_link = None;
                 self.search_mode = true;
                 operation::focus(Id::new(SEARCH_INPUT_ID))
             }
@@ -304,6 +363,7 @@ impl MdrApp {
         .width(Length::Fill)
         .height(Length::Fill);
 
+        // Status bar: shows focused link info or search bar
         if self.search_mode {
             let hit_info = if self.search_hits.is_empty() {
                 if self.search_query.is_empty() {
@@ -334,6 +394,20 @@ impl MdrApp {
             .width(Length::Fill);
 
             column![search_bar, content_area].into()
+        } else if let Some(idx) = self.focused_link {
+            let link = &self.links[idx];
+            let link_info = format!(
+                "[{}/{}] {} → {}",
+                idx + 1,
+                self.links.len(),
+                link.text,
+                link.url
+            );
+            let link_bar = container(text(link_info).size(12))
+                .padding(6)
+                .width(Length::Fill);
+
+            column![content_area, link_bar].into()
         } else {
             content_area.into()
         }
@@ -379,6 +453,14 @@ impl MdrApp {
                             keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
                             keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
                             keyboard::key::Named::Escape => Some(Message::SearchClose),
+                            keyboard::key::Named::Tab => {
+                                if modifiers.shift() {
+                                    Some(Message::FocusPrevLink)
+                                } else {
+                                    Some(Message::FocusNextLink)
+                                }
+                            }
+                            keyboard::key::Named::Enter => Some(Message::ActivateLink),
                             _ => None,
                         },
                         keyboard::Key::Character(c) => {
@@ -420,14 +502,9 @@ impl MdrApp {
     // -----------------------------------------------------------------------
 
     /// Push a new navigation entry, truncating any forward history.
-    ///
-    /// Before pushing, saves the current scroll position into the current entry.
     fn push_nav(&mut self, file_path: PathBuf, scroll_y: f32) {
-        // Update the current entry with our live scroll position.
         self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
-        // Discard any forward history (browser semantics).
         self.nav_history.truncate(self.nav_index + 1);
-        // Push the new destination.
         self.nav_history.push(NavEntry {
             file_path,
             scroll_y,
@@ -436,9 +513,6 @@ impl MdrApp {
     }
 
     /// Restore the view to the entry at `nav_index`.
-    ///
-    /// Loads the file if it differs from the current file, then snaps the
-    /// scrollable to the recorded scroll position.
     fn restore_nav_entry(&mut self) -> Task<Message> {
         let entry = self.nav_history[self.nav_index].clone();
         if entry.file_path != self.file_path {
@@ -452,7 +526,7 @@ impl MdrApp {
     }
 
     // -----------------------------------------------------------------------
-    // Link / file helpers
+    // Link helpers
     // -----------------------------------------------------------------------
 
     fn handle_link(&mut self, url: String) -> Task<Message> {
@@ -499,8 +573,6 @@ impl MdrApp {
     }
 
     /// Compute the relative scroll y-position for a given anchor.
-    ///
-    /// Returns `None` if the anchor cannot be matched to any heading.
     fn compute_anchor_y(&self, anchor: &str) -> Option<f32> {
         use std::collections::HashMap;
 
@@ -524,7 +596,7 @@ impl MdrApp {
             }
         }
 
-        // Pass 2: relaxed match — strip everything except ascii-alphanumeric
+        // Pass 2: relaxed match
         let anchor_normalized = normalize_for_match(&target_anchor);
         if anchor_normalized.is_empty() {
             return None;
@@ -543,9 +615,27 @@ impl MdrApp {
         None
     }
 
+    /// Scroll the view to the link at the given index.
+    fn scroll_to_link(&self, idx: usize) -> Task<Message> {
+        let total_lines = self.raw_markdown.lines().count() as f32;
+        if total_lines <= 0.0 {
+            return Task::none();
+        }
+        let line = self.links[idx].line as f32;
+        let ratio = line / total_lines;
+        let offset = RelativeOffset { x: 0.0, y: ratio };
+        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
+    }
+
+    // -----------------------------------------------------------------------
+    // File loading
+    // -----------------------------------------------------------------------
+
     fn load_file(&mut self, path: &Path) {
         match std::fs::read_to_string(path) {
             Ok(src) => {
+                self.links = extract_links(&src);
+                self.focused_link = None;
                 self.raw_markdown = src;
                 self.content = markdown::Content::parse(&self.raw_markdown);
                 self.file_path = path.to_path_buf();
@@ -568,6 +658,8 @@ impl MdrApp {
             while rx.try_recv().is_ok() {}
             match std::fs::read_to_string(&self.file_path) {
                 Ok(new_content) => {
+                    self.links = extract_links(&new_content);
+                    self.focused_link = None;
                     self.raw_markdown = new_content;
                     self.content = markdown::Content::parse(&self.raw_markdown);
                 }
@@ -575,6 +667,10 @@ impl MdrApp {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Search helpers
+    // -----------------------------------------------------------------------
 
     fn recompute_search_hits(&mut self) {
         self.search_hits.clear();
@@ -617,6 +713,73 @@ impl MdrApp {
 }
 
 // ---------------------------------------------------------------------------
+// Link extraction (using pulldown-cmark)
+// ---------------------------------------------------------------------------
+
+/// Extract all links from the markdown source with their line positions.
+fn extract_links(source: &str) -> Vec<DocumentLink> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let mut links = Vec::new();
+    let parser = Parser::new_ext(source, Options::all());
+
+    // Track byte offset → line number mapping
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(i, b)| if b == b'\n' { Some(i + 1) } else { None }),
+        )
+        .collect();
+
+    let byte_offset_to_line = |offset: usize| -> usize {
+        line_starts
+            .partition_point(|&start| start <= offset)
+            .saturating_sub(1)
+    };
+
+    let mut in_link: Option<(String, usize)> = None; // (url, line)
+    let mut link_text = String::new();
+
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let line = byte_offset_to_line(range.start);
+                in_link = Some((dest_url.to_string(), line));
+                link_text.clear();
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((url, line)) = in_link.take() {
+                    let display = if link_text.is_empty() {
+                        url.clone()
+                    } else {
+                        link_text.clone()
+                    };
+                    links.push(DocumentLink {
+                        line,
+                        url,
+                        text: display,
+                    });
+                }
+                link_text.clear();
+            }
+            Event::Text(t) if in_link.is_some() => {
+                link_text.push_str(&t);
+            }
+            Event::Code(c) if in_link.is_some() => {
+                link_text.push('`');
+                link_text.push_str(&c);
+                link_text.push('`');
+            }
+            _ => {}
+        }
+    }
+
+    links
+}
+
+// ---------------------------------------------------------------------------
 // Heading / slug helpers
 // ---------------------------------------------------------------------------
 
@@ -647,6 +810,7 @@ fn github_slug(text: &str, seen: &mut std::collections::HashMap<String, u32>) ->
     *count += 1;
     format!("#{slug}")
 }
+
 /// Extract the heading text from an ATX heading line, or `None` if the line
 /// is not a valid ATX heading.
 fn extract_atx_heading(line: &str) -> Option<&str> {
@@ -766,5 +930,36 @@ mod tests {
         let anchor_normalized = normalize_for_match(&anchor.to_lowercase());
         let heading_normalized = normalize_for_match(&heading.replace('`', "").to_lowercase());
         assert_eq!(anchor_normalized, heading_normalized);
+    }
+
+    #[test]
+    fn extract_links_finds_inline_links() {
+        let md = "Hello [world](https://example.com) and [foo](./bar.md)";
+        let links = extract_links(md);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].text, "world");
+        assert_eq!(links[0].url, "https://example.com");
+        assert_eq!(links[1].text, "foo");
+        assert_eq!(links[1].url, "./bar.md");
+    }
+
+    #[test]
+    fn extract_links_finds_anchor_links() {
+        let md = "- [Section One](#section-one)\n- [Section Two](#section-two)\n";
+        let links = extract_links(md);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].url, "#section-one");
+        assert_eq!(links[1].url, "#section-two");
+        assert_eq!(links[0].line, 0);
+        assert_eq!(links[1].line, 1);
+    }
+
+    #[test]
+    fn extract_links_with_code_in_text() {
+        let md = "See [`Config`](./config.md) for details.";
+        let links = extract_links(md);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].text, "`Config`");
+        assert_eq!(links[0].url, "./config.md");
     }
 }
