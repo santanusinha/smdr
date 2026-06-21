@@ -19,7 +19,7 @@ use iced::keyboard;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{column, container, markdown, row, scrollable, text, text_input};
-use iced::{Element, Length, Subscription, Task, Theme};
+use iced::{Element, Length, Pixels, Subscription, Task, Theme};
 
 use mdr::watcher;
 
@@ -358,7 +358,20 @@ impl MdrApp {
     // View
     // -----------------------------------------------------------------------
     fn view(&self) -> Element<'_, Message> {
-        let settings = markdown::Settings::from(&self.theme());
+        let theme = self.theme();
+        let style = markdown::Style::from(&theme);
+        let settings = markdown::Settings {
+            text_size: Pixels(16.0),
+            h1_size: Pixels(24.0),
+            h2_size: Pixels(21.0),
+            h3_size: Pixels(18.0),
+            h4_size: Pixels(17.0),
+            h5_size: Pixels(16.0),
+            h6_size: Pixels(16.0),
+            code_size: Pixels(15.0),
+            spacing: Pixels(14.0),
+            style,
+        };
         let md_view: Element<Message> =
             markdown::view(self.content.items(), settings).map(Message::LinkClicked);
 
