@@ -541,7 +541,7 @@ impl MdrApp {
             Message::ThemeChanged,
         )
         .text_size(12)
-        .padding(2);
+        .padding([4, 8]);
 
         let shortcuts_btn = button(text("⌨").size(14))
             .on_press(Message::ShowShortcuts)
