@@ -614,6 +614,18 @@ impl MdrApp {
         // Assemble the full layout
         let mut layout = column![];
 
+        // --- Header bar showing file name ---
+        let file_name = self
+            .file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let header_bar = container(text(file_name).size(13))
+            .padding([4, 8])
+            .width(Length::Fill)
+            .style(container::rounded_box);
+        layout = layout.push(header_bar);
+
         if let Some(bar) = search_bar {
             layout = layout.push(bar);
         }
