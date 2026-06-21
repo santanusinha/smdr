@@ -283,12 +283,22 @@ impl MdrApp {
                 self.scroll_to_link(prev)
             }
             Message::ActivateLink => {
-                let Some(idx) = self.focused_link else {
-                    return Task::none();
-                };
-                let url = self.links[idx].url.clone();
-                self.focused_link = None;
-                self.handle_link(url)
+                if self.focused_link.is_some() {
+                    let idx = self.focused_link.unwrap();
+                    let url = self.links[idx].url.clone();
+                    self.focused_link = None;
+                    self.handle_link(url)
+                } else if !self.search_hits.is_empty() {
+                    // Enter cycles to next search hit when no link is focused
+                    let next = match self.current_hit {
+                        Some(i) => (i + 1) % self.search_hits.len(),
+                        None => 0,
+                    };
+                    self.current_hit = Some(next);
+                    self.scroll_to_current_hit()
+                } else {
+                    Task::none()
+                }
             }
             Message::SearchOpen => {
                 self.focused_link = None;
@@ -394,6 +404,20 @@ impl MdrApp {
             .width(Length::Fill);
 
             column![search_bar, content_area].into()
+        } else if !self.search_hits.is_empty() {
+            // Show search status bar after search bar is closed
+            let idx = self.current_hit.map_or(0, |i| i + 1);
+            let status = format!(
+                "[{}/{}] \"{}\"",
+                idx,
+                self.search_hits.len(),
+                self.search_query
+            );
+            let status_bar = container(text(status).size(12))
+                .padding(6)
+                .width(Length::Fill);
+
+            column![content_area, status_bar].into()
         } else if let Some(idx) = self.focused_link {
             let link = &self.links[idx];
             let link_info = format!(
@@ -469,6 +493,7 @@ impl MdrApp {
                                 match s {
                                     "d" => Some(Message::ScrollBy(360.0)),
                                     "u" => Some(Message::ScrollBy(-360.0)),
+                                    "f" => Some(Message::SearchOpen),
                                     _ => None,
                                 }
                             } else if modifiers.alt() {
