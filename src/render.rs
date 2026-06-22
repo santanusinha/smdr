@@ -14,6 +14,7 @@
 //! - Permanent bottom status bar with theme selector, shortcuts, and about.
 //! - Collapsible, resizable left sidebar showing document outline (headings).
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -24,28 +25,41 @@ use iced::mouse;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{
-    button, column, container, markdown, mouse_area, pick_list, rich_text, row, rule, scrollable,
-    text, text_input,
+    button, column, container, image as image_widget, markdown, mouse_area, pick_list, rich_text,
+    row, rule, scrollable, svg, text, text_input,
 };
 use iced::{
-    Background, Color, Element, Event, Length, Pixels, Renderer, Subscription, Task, Theme,
+    Background, Color, ContentFit, Element, Event, Length, Pixels, Renderer, Subscription, Task,
+    Theme,
 };
 
-use mdr::watcher;
-
 use crate::ThemeArg;
+use mdr::watcher;
 
 /// Configuration passed to [`launch`].
 pub struct ViewerConfig {
     pub theme: ThemeArg,
     pub watch: bool,
-    /// Reserved for future use (e.g. fetching remote images).
-    #[allow(dead_code)]
+    /// Allow fetching remote images over the network.
     pub network_enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Image cache types
+// ---------------------------------------------------------------------------
+
+/// Cached image data for display in the viewer.
+#[derive(Debug, Clone)]
+enum ImageData {
+    Svg(Vec<u8>),
+    Raster(Vec<u8>),
 }
 
 /// Pixels scrolled per j/k keypress.
 const LINE_SCROLL: f32 = 40.0;
+
+/// Maximum width for rendered images (pixels).
+const MAX_IMAGE_WIDTH: f32 = 800.0;
 
 /// Scrollable widget ID for programmatic scrolling.
 const SCROLLABLE_ID: &str = "mdr-content-scroll";
@@ -102,6 +116,7 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
         watcher_rx,
         theme: theme_arg,
         title,
+        network_enabled: config.network_enabled,
     };
 
     // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
@@ -150,6 +165,7 @@ pub fn launch_stdin(
         watcher_rx: None,
         theme: config.theme,
         title,
+        network_enabled: config.network_enabled,
     };
 
     let init = std::sync::Mutex::new(Some(app_state));
@@ -180,6 +196,7 @@ struct AppInit {
     watcher_rx: Option<Receiver<()>>,
     theme: ThemeArg,
     title: String,
+    network_enabled: bool,
 }
 
 impl AppInit {
@@ -187,7 +204,19 @@ impl AppInit {
         let links = extract_links(&self.markdown_src);
         let toc = extract_toc(&self.markdown_src);
         let content = markdown::Content::parse(&self.markdown_src);
-        let app = MdrApp {
+        let base_dir = self
+            .file_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        let network_enabled = self.network_enabled;
+        let image_urls: Vec<String> = content
+            .images()
+            .iter()
+            .map(|u| u.as_str().to_owned())
+            .collect();
+
+        let mut app = MdrApp {
             raw_markdown: self.markdown_src,
             content,
             file_path: self.file_path.clone(),
@@ -212,8 +241,36 @@ impl AppInit {
             sidebar_ratio: DEFAULT_SIDEBAR_RATIO,
             sidebar_dragging: false,
             window_width: INITIAL_WINDOW_WIDTH,
+            image_cache: HashMap::new(),
+            image_pending: HashSet::new(),
+            image_failed: HashSet::new(),
+            mermaid_cache: HashMap::new(),
+            network_enabled,
+            base_dir: base_dir.clone(),
         };
-        (app, Task::none())
+
+        // Pre-render mermaid diagrams
+        app.prerender_mermaid();
+
+        // Mark image URLs as pending and spawn loading tasks
+        for url in &image_urls {
+            app.image_pending.insert(url.clone());
+        }
+
+        let task = if image_urls.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(image_urls.into_iter().map(move |url| {
+                let base = base_dir.clone();
+                let net = network_enabled;
+                Task::perform(
+                    async move { load_image_async(&url, &base, net).await },
+                    |(url, data)| Message::ImageLoaded(url, data),
+                )
+            }))
+        };
+
+        (app, task)
     }
 }
 
@@ -305,6 +362,7 @@ enum Message {
     Tick,
     Scrolled(scrollable::Viewport),
     WindowResized(iced::Size),
+    ImageLoaded(String, Option<ImageData>),
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +401,18 @@ struct MdrApp {
     sidebar_dragging: bool,
     /// Current window width in pixels (updated on resize events).
     window_width: f32,
+    /// Cached images keyed by URL.
+    image_cache: HashMap<String, ImageData>,
+    /// URLs that are currently being loaded.
+    image_pending: HashSet<String>,
+    /// URLs that failed to load.
+    image_failed: HashSet<String>,
+    /// Cached mermaid diagram SVGs keyed by source code.
+    mermaid_cache: HashMap<String, Vec<u8>>,
+    /// Whether network fetching is enabled.
+    network_enabled: bool,
+    /// Base directory for resolving relative image paths.
+    base_dir: PathBuf,
 }
 
 impl MdrApp {
@@ -526,16 +596,25 @@ impl MdrApp {
                 }
                 Task::none()
             }
-            Message::Tick => {
-                self.poll_watcher();
-                Task::none()
-            }
+            Message::Tick => self.poll_watcher(),
             Message::Scrolled(viewport) => {
                 self.current_scroll_y = viewport.relative_offset().y;
                 Task::none()
             }
             Message::WindowResized(size) => {
                 self.window_width = size.width;
+                Task::none()
+            }
+            Message::ImageLoaded(url, data) => {
+                self.image_pending.remove(&url);
+                match data {
+                    Some(img_data) => {
+                        self.image_cache.insert(url, img_data);
+                    }
+                    None => {
+                        self.image_failed.insert(url);
+                    }
+                }
                 Task::none()
             }
         }
@@ -576,7 +655,12 @@ impl MdrApp {
             spacing: Pixels(14.0),
             style,
         };
-        let viewer = MdrViewer;
+        let viewer = MdrViewer {
+            image_cache: &self.image_cache,
+            image_pending: &self.image_pending,
+            image_failed: &self.image_failed,
+            mermaid_cache: &self.mermaid_cache,
+        };
         let md_view: Element<Message> =
             markdown::view_with(self.content.items(), settings, &viewer).map(Message::LinkClicked);
 
@@ -1000,18 +1084,22 @@ impl MdrApp {
     /// Restore the view to the entry at `nav_index`.
     fn restore_nav_entry(&mut self) -> Task<Message> {
         let entry = self.nav_history[self.nav_index].clone();
-        if entry.file_path != self.file_path {
-            self.load_file(&entry.file_path);
-        }
+        let image_task = if entry.file_path != self.file_path {
+            self.load_file(&entry.file_path)
+        } else {
+            Task::none()
+        };
         let offset = RelativeOffset {
             x: 0.0,
             y: entry.scroll_y,
         };
-        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
+        Task::batch([
+            image_task,
+            operation::snap_to(Id::new(SCROLLABLE_ID), offset),
+        ])
     }
 
     // -----------------------------------------------------------------------
-    // Link helpers
     // -----------------------------------------------------------------------
 
     fn handle_link(&mut self, url: String) -> Task<Message> {
@@ -1032,11 +1120,13 @@ impl MdrApp {
             let base = self.file_path.parent().unwrap_or(Path::new("."));
             base.join(raw)
         };
-
         if target.exists() && target.is_file() {
             self.push_nav(target.clone(), 0.0);
-            self.load_file(&target);
-            operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 })
+            let image_task = self.load_file(&target);
+            Task::batch([
+                image_task,
+                operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 }),
+            ])
         } else {
             eprintln!("Warning: could not open '{}'", target.display());
             Task::none()
@@ -1116,7 +1206,7 @@ impl MdrApp {
     // File loading
     // -----------------------------------------------------------------------
 
-    fn load_file(&mut self, path: &Path) {
+    fn load_file(&mut self, path: &Path) -> Task<Message> {
         match std::fs::read_to_string(path) {
             Ok(src) => {
                 self.links = extract_links(&src);
@@ -1125,20 +1215,25 @@ impl MdrApp {
                 self.raw_markdown = src;
                 self.content = markdown::Content::parse(&self.raw_markdown);
                 self.file_path = path.to_path_buf();
+                self.base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
                 self.title = format!(
                     "mdr — {}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
                 self.search_hits.clear();
                 self.current_hit = None;
+                self.spawn_image_loads()
             }
-            Err(e) => eprintln!("Warning: could not read '{}': {e}", path.display()),
+            Err(e) => {
+                eprintln!("Warning: could not read '{}': {e}", path.display());
+                Task::none()
+            }
         }
     }
 
-    fn poll_watcher(&mut self) {
+    fn poll_watcher(&mut self) -> Task<Message> {
         let Some(ref rx) = self.watcher_rx else {
-            return;
+            return Task::none();
         };
         if rx.try_recv().is_ok() {
             while rx.try_recv().is_ok() {}
@@ -1149,8 +1244,81 @@ impl MdrApp {
                     self.focused_link = None;
                     self.raw_markdown = new_content;
                     self.content = markdown::Content::parse(&self.raw_markdown);
+                    return self.spawn_image_loads();
                 }
                 Err(e) => eprintln!("Warning: could not reload file: {e}"),
+            }
+        }
+        Task::none()
+    }
+
+    /// Spawn async image loading tasks for all images in the current content.
+    fn spawn_image_loads(&mut self) -> Task<Message> {
+        // Pre-render mermaid diagrams into the cache
+        self.prerender_mermaid();
+
+        let image_urls: Vec<String> = self
+            .content
+            .images()
+            .iter()
+            .filter(|u| {
+                let s = u.as_str();
+                !self.image_cache.contains_key(s) && !self.image_failed.contains(s)
+            })
+            .map(|u| u.as_str().to_owned())
+            .collect();
+
+        if image_urls.is_empty() {
+            return Task::none();
+        }
+
+        // Mark all URLs as pending
+        for url in &image_urls {
+            self.image_pending.insert(url.clone());
+        }
+
+        let base_dir = self.base_dir.clone();
+        let network_enabled = self.network_enabled;
+
+        Task::batch(image_urls.into_iter().map(move |url| {
+            let base = base_dir.clone();
+            let net = network_enabled;
+            Task::perform(
+                async move { load_image_async(&url, &base, net).await },
+                |(url, data)| Message::ImageLoaded(url, data),
+            )
+        }))
+    }
+
+    /// Pre-render all mermaid code blocks and cache their SVG output.
+    fn prerender_mermaid(&mut self) {
+        use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+        let parser = Parser::new_ext(&self.raw_markdown, Options::all());
+        let mut in_mermaid = false;
+        let mut code_buf = String::new();
+
+        for event in parser {
+            match event {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
+                    if lang.as_ref() == "mermaid" =>
+                {
+                    in_mermaid = true;
+                    code_buf.clear();
+                }
+                Event::End(TagEnd::CodeBlock) if in_mermaid => {
+                    in_mermaid = false;
+                    if !self.mermaid_cache.contains_key(&code_buf)
+                        && let Ok(svg_str) = mermaid_rs_renderer::render(&code_buf)
+                    {
+                        self.mermaid_cache
+                            .insert(code_buf.clone(), svg_str.into_bytes());
+                    }
+                }
+                Event::Text(t) if in_mermaid => {
+                    code_buf.push_str(&t);
+                }
+                _ => {}
             }
         }
     }
@@ -1203,22 +1371,120 @@ impl MdrApp {
 // Custom Viewer for theme-adaptive code block styling
 // ---------------------------------------------------------------------------
 
-/// Custom markdown viewer that overrides code block rendering to use a
-/// theme-adaptive background instead of the default hardcoded dark style.
-struct MdrViewer;
+/// Custom markdown viewer that overrides code block and image rendering.
+/// Holds references to image/mermaid caches for displaying loaded content.
+struct MdrViewer<'b> {
+    image_cache: &'b HashMap<String, ImageData>,
+    image_pending: &'b HashSet<String>,
+    image_failed: &'b HashSet<String>,
+    mermaid_cache: &'b HashMap<String, Vec<u8>>,
+}
 
-impl<'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer {
+impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer<'b> {
     fn on_link_click(url: markdown::Uri) -> markdown::Uri {
         url
+    }
+
+    fn image(
+        &self,
+        settings: markdown::Settings,
+        url: &'a markdown::Uri,
+        _title: &'a str,
+        alt: &markdown::Text,
+    ) -> Element<'a, markdown::Uri, Theme, Renderer> {
+        if let Some(img_data) = self.image_cache.get(url.as_str()) {
+            match img_data {
+                ImageData::Svg(bytes) => {
+                    let handle = svg::Handle::from_memory(bytes.clone());
+                    container(
+                        svg(handle)
+                            .content_fit(ContentFit::ScaleDown)
+                            .width(Length::Shrink)
+                            .height(Length::Shrink),
+                    )
+                    .max_width(MAX_IMAGE_WIDTH)
+                    .center_x(Length::Fill)
+                    .padding(settings.spacing.0)
+                    .into()
+                }
+                ImageData::Raster(bytes) => {
+                    let handle = image_widget::Handle::from_bytes(bytes.clone());
+                    container(
+                        image_widget(handle)
+                            .content_fit(ContentFit::ScaleDown)
+                            .width(Length::Shrink)
+                            .height(Length::Shrink),
+                    )
+                    .max_width(MAX_IMAGE_WIDTH)
+                    .center_x(Length::Fill)
+                    .padding(settings.spacing.0)
+                    .into()
+                }
+            }
+        } else if self.image_failed.contains(url.as_str()) {
+            container(
+                text("⚠ Failed to load image")
+                    .size(13)
+                    .color(Color::from_rgb(0.7, 0.3, 0.3)),
+            )
+            .padding(settings.spacing.0)
+            .into()
+        } else if self.image_pending.contains(url.as_str()) {
+            container(
+                text("⏳ Loading image…")
+                    .size(13)
+                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+            )
+            .padding(settings.spacing.0)
+            .into()
+        } else {
+            // Fallback: show alt text
+            container(rich_text(alt.spans(settings.style)).on_link_click(Self::on_link_click))
+                .padding(settings.spacing.0)
+                .into()
+        }
     }
 
     fn code_block(
         &self,
         settings: markdown::Settings,
-        _language: Option<&'a str>,
-        _code: &'a str,
+        language: Option<&'a str>,
+        code: &'a str,
         lines: &'a [markdown::Text],
     ) -> Element<'a, markdown::Uri, Theme, Renderer> {
+        // Mermaid diagram rendering (use cache to avoid re-rendering each frame)
+        if language == Some("mermaid") {
+            if let Some(svg_bytes) = self.mermaid_cache.get(code) {
+                let handle = svg::Handle::from_memory(svg_bytes.clone());
+                return container(
+                    svg(handle)
+                        .content_fit(ContentFit::ScaleDown)
+                        .width(Length::Shrink)
+                        .height(Length::Shrink),
+                )
+                .max_width(MAX_IMAGE_WIDTH)
+                .center_x(Length::Fill)
+                .padding(settings.spacing.0)
+                .style(code_block_container_style)
+                .into();
+            }
+            // Fallback: try to render on-the-fly (first render before cache is populated)
+            if let Ok(svg_str) = mermaid_rs_renderer::render(code) {
+                let handle = svg::Handle::from_memory(svg_str.into_bytes());
+                return container(
+                    svg(handle)
+                        .content_fit(ContentFit::ScaleDown)
+                        .width(Length::Shrink)
+                        .height(Length::Shrink),
+                )
+                .max_width(MAX_IMAGE_WIDTH)
+                .center_x(Length::Fill)
+                .padding(settings.spacing.0)
+                .style(code_block_container_style)
+                .into();
+            }
+        }
+
         container(
             scrollable(
                 container(column(lines.iter().map(|line| {
@@ -1265,6 +1531,53 @@ fn code_block_container_style(theme: &Theme) -> container::Style {
             border: border::rounded(6),
             ..container::Style::default()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Async image loading
+// ---------------------------------------------------------------------------
+
+/// Load an image from a local file path or network URL.
+///
+/// Returns `(url, Some(ImageData))` on success, `(url, None)` on failure.
+async fn load_image_async(
+    url: &str,
+    base_dir: &Path,
+    network_enabled: bool,
+) -> (String, Option<ImageData>) {
+    let result = load_image_inner(url, base_dir, network_enabled).await;
+    (url.to_owned(), result)
+}
+
+async fn load_image_inner(url: &str, base_dir: &Path, network_enabled: bool) -> Option<ImageData> {
+    let is_remote = url.starts_with("http://") || url.starts_with("https://");
+
+    let bytes = if is_remote {
+        if !network_enabled {
+            return None;
+        }
+        reqwest::get(url).await.ok()?.bytes().await.ok()?.to_vec()
+    } else {
+        // Local file: resolve relative to base_dir
+        let path = if Path::new(url).is_absolute() {
+            PathBuf::from(url)
+        } else {
+            base_dir.join(url)
+        };
+        std::fs::read(&path).ok()?
+    };
+
+    // Detect SVG by content or extension
+    let is_svg = url.ends_with(".svg")
+        || bytes.starts_with(b"<?xml")
+        || bytes.starts_with(b"<svg")
+        || bytes.windows(4).take(256).any(|w| w == b"<svg");
+
+    if is_svg {
+        Some(ImageData::Svg(bytes))
+    } else {
+        Some(ImageData::Raster(bytes))
     }
 }
 
