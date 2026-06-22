@@ -67,7 +67,9 @@ const SCROLLABLE_ID: &str = "mdr-content-scroll";
 /// Text input widget ID for search bar focus.
 const SEARCH_INPUT_ID: &str = "mdr-search-input";
 
-/// Default sidebar width in pixels.
+/// Scrollable widget ID for sidebar programmatic scrolling.
+const SIDEBAR_SCROLLABLE_ID: &str = "mdr-sidebar-scroll";
+
 /// Default sidebar ratio (fraction of window width).
 const DEFAULT_SIDEBAR_RATIO: f32 = 0.25;
 
@@ -604,7 +606,7 @@ impl MdrApp {
                     None => 0,
                 };
                 self.sidebar_selected = Some(next);
-                Task::none()
+                self.snap_sidebar_to_selected()
             }
             Message::SidebarPrev => {
                 if self.toc.is_empty() {
@@ -615,7 +617,7 @@ impl MdrApp {
                     Some(i) => i - 1,
                 };
                 self.sidebar_selected = Some(prev);
-                Task::none()
+                self.snap_sidebar_to_selected()
             }
             Message::SidebarActivate => {
                 if let Some(idx) = self.sidebar_selected {
@@ -863,9 +865,14 @@ impl MdrApp {
         .width(Length::Fill);
 
         container(
-            column![header, scrollable(items).height(Length::Fill)]
-                .height(Length::Fill)
-                .width(Length::Fixed(self.window_width * self.sidebar_ratio)),
+            column![
+                header,
+                scrollable(items)
+                    .id(Id::new(SIDEBAR_SCROLLABLE_ID))
+                    .height(Length::Fill)
+            ]
+            .height(Length::Fill)
+            .width(Length::Fixed(self.window_width * self.sidebar_ratio)),
         )
         .height(Length::Fill)
         .style(container::rounded_box)
@@ -1316,6 +1323,24 @@ impl MdrApp {
         let ratio = line / total_lines;
         let offset = RelativeOffset { x: 0.0, y: ratio };
         operation::snap_to(Id::new(SCROLLABLE_ID), offset)
+    }
+
+    /// Scroll the sidebar so the currently selected heading is visible.
+    fn snap_sidebar_to_selected(&self) -> Task<Message> {
+        let selected = match self.sidebar_selected {
+            Some(i) => i,
+            None => return Task::none(),
+        };
+        let total = self.toc.len();
+        if total == 0 {
+            return Task::none();
+        }
+        let y = if total <= 1 {
+            0.0
+        } else {
+            (selected as f32) / ((total - 1) as f32)
+        };
+        operation::snap_to(Id::new(SIDEBAR_SCROLLABLE_ID), RelativeOffset { x: 0.0, y })
     }
 
     // -----------------------------------------------------------------------
