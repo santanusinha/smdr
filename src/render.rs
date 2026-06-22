@@ -238,6 +238,8 @@ impl AppInit {
             overlay: Overlay::None,
             toc,
             sidebar_open: true,
+            sidebar_focused: false,
+            sidebar_selected: None,
             sidebar_ratio: DEFAULT_SIDEBAR_RATIO,
             sidebar_dragging: false,
             window_width: INITIAL_WINDOW_WIDTH,
@@ -355,6 +357,11 @@ enum Message {
     ShowAbout,
     CloseOverlay,
     ToggleSidebar,
+    FocusSidebar,
+    UnfocusSidebar,
+    SidebarNext,
+    SidebarPrev,
+    SidebarActivate,
     SidebarDragStart,
     SidebarDragMove(f32),
     SidebarDragEnd,
@@ -395,6 +402,10 @@ struct MdrApp {
     toc: Vec<TocEntry>,
     /// Whether the sidebar is visible.
     sidebar_open: bool,
+    /// Whether keyboard focus is in the sidebar (outline navigation).
+    sidebar_focused: bool,
+    /// Currently selected heading index in the sidebar.
+    sidebar_selected: Option<usize>,
     /// Current sidebar width as a ratio of window width (0.15..=0.40).
     sidebar_ratio: f32,
     /// Whether the user is actively dragging the sidebar resize handle.
@@ -564,6 +575,53 @@ impl MdrApp {
             }
             Message::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
+                if !self.sidebar_open {
+                    self.sidebar_focused = false;
+                }
+                Task::none()
+            }
+            Message::FocusSidebar => {
+                if !self.sidebar_open {
+                    self.sidebar_open = true;
+                }
+                self.sidebar_focused = true;
+                if self.sidebar_selected.is_none() && !self.toc.is_empty() {
+                    self.sidebar_selected = Some(0);
+                }
+                Task::none()
+            }
+            Message::UnfocusSidebar => {
+                self.sidebar_focused = false;
+                Task::none()
+            }
+            Message::SidebarNext => {
+                if self.toc.is_empty() {
+                    return Task::none();
+                }
+                let next = match self.sidebar_selected {
+                    Some(i) if i + 1 < self.toc.len() => i + 1,
+                    Some(i) => i,
+                    None => 0,
+                };
+                self.sidebar_selected = Some(next);
+                Task::none()
+            }
+            Message::SidebarPrev => {
+                if self.toc.is_empty() {
+                    return Task::none();
+                }
+                let prev = match self.sidebar_selected {
+                    Some(0) | None => 0,
+                    Some(i) => i - 1,
+                };
+                self.sidebar_selected = Some(prev);
+                Task::none()
+            }
+            Message::SidebarActivate => {
+                if let Some(idx) = self.sidebar_selected {
+                    self.sidebar_focused = false;
+                    return self.update(Message::NavigateToHeading(idx));
+                }
                 Task::none()
             }
             Message::SidebarDragStart => {
@@ -768,18 +826,29 @@ impl MdrApp {
 
         for (idx, entry) in self.toc.iter().enumerate() {
             let indent = ((entry.level - min_level) as u16) * 12;
+            let is_selected = self.sidebar_focused && self.sidebar_selected == Some(idx);
             let label = text(&entry.text).size(13);
+            let btn_style = if is_selected {
+                button::primary
+            } else {
+                button::text
+            };
             let btn = button(label)
                 .on_press(Message::NavigateToHeading(idx))
                 .padding([2, 4])
-                .style(button::text);
+                .style(btn_style);
 
             let left_pad = iced::Padding::ZERO.left((indent as f32) * 1.0);
             items = items.push(container(btn).padding(left_pad));
         }
 
+        let header_text = if self.sidebar_focused {
+            "Outline ●"
+        } else {
+            "Outline"
+        };
         let header = row![
-            text("Outline").size(13),
+            text(header_text).size(13),
             container(
                 button(text("✕").size(11))
                     .on_press(Message::ToggleSidebar)
@@ -884,7 +953,8 @@ impl MdrApp {
             ("Ctrl-F", "Open search"),
             ("n", "Next search hit"),
             ("p", "Previous search hit"),
-            ("Ctrl-B", "Toggle sidebar"),
+            ("Ctrl-B", "Toggle sidebar / focus outline"),
+            ("o", "Focus outline sidebar"),
             ("Ctrl-T", "Cycle theme"),
             ("Esc", "Close search / overlay"),
         ];
@@ -964,88 +1034,134 @@ impl MdrApp {
         let search_mode = self.search_mode;
         let has_overlay = self.overlay != Overlay::None;
 
+        let sidebar_focused = self.sidebar_focused;
+        let sidebar_open = self.sidebar_open;
+
         let keys = keyboard::listen()
-            .with((search_mode, has_overlay))
-            .filter_map(|((search_mode, has_overlay), event)| {
-                let keyboard::Event::KeyPressed {
-                    key,
-                    modifiers,
-                    text: _,
-                    modified_key: _,
-                    physical_key: _,
-                    location: _,
-                    repeat: _,
-                } = event
-                else {
-                    return None;
-                };
+            .with((search_mode, has_overlay, sidebar_focused, sidebar_open))
+            .filter_map(
+                |((search_mode, has_overlay, sidebar_focused, sidebar_open), event)| {
+                    let keyboard::Event::KeyPressed {
+                        key,
+                        modifiers,
+                        text: _,
+                        modified_key: _,
+                        physical_key: _,
+                        location: _,
+                        repeat: _,
+                    } = event
+                    else {
+                        return None;
+                    };
 
-                // Escape always closes overlay or search
-                if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
-                    if has_overlay {
-                        return Some(Message::CloseOverlay);
+                    // Escape always closes overlay, search, or sidebar focus
+                    if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
+                        if has_overlay {
+                            return Some(Message::CloseOverlay);
+                        }
+                        if search_mode {
+                            return Some(Message::SearchClose);
+                        }
+                        if sidebar_focused {
+                            return Some(Message::UnfocusSidebar);
+                        }
+                        return None;
                     }
+
                     if search_mode {
-                        return Some(Message::SearchClose);
+                        return None;
                     }
-                    return None;
-                }
 
-                if search_mode {
-                    return None;
-                }
+                    if has_overlay {
+                        return None;
+                    }
 
-                if has_overlay {
-                    return None;
-                }
+                    // Sidebar-focused mode: j/k/arrows navigate headings
+                    if sidebar_focused {
+                        return match &key {
+                            keyboard::Key::Named(named) => match named {
+                                keyboard::key::Named::ArrowDown => Some(Message::SidebarNext),
+                                keyboard::key::Named::ArrowUp => Some(Message::SidebarPrev),
+                                keyboard::key::Named::Enter => Some(Message::SidebarActivate),
+                                _ => None,
+                            },
+                            keyboard::Key::Character(c) => match c.as_str() {
+                                "j" => Some(Message::SidebarNext),
+                                "k" => Some(Message::SidebarPrev),
+                                "o" => Some(Message::UnfocusSidebar),
+                                _ => {
+                                    if modifiers.control() && c.as_str() == "b" {
+                                        Some(Message::UnfocusSidebar)
+                                    } else {
+                                        None
+                                    }
+                                }
+                            },
+                            _ => None,
+                        };
+                    }
 
-                match &key {
-                    keyboard::Key::Named(named) => match named {
-                        keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
-                        keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
-                        keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
-                        keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
-                        keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
-                        keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
-                        keyboard::key::Named::Tab => {
-                            if modifiers.shift() {
-                                Some(Message::FocusPrevLink)
+                    match &key {
+                        keyboard::Key::Named(named) => match named {
+                            keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
+                            keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
+                            keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
+                            keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
+                            keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
+                            keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
+                            keyboard::key::Named::Tab => {
+                                if modifiers.shift() {
+                                    Some(Message::FocusPrevLink)
+                                } else {
+                                    Some(Message::FocusNextLink)
+                                }
+                            }
+                            keyboard::key::Named::Enter => Some(Message::ActivateLink),
+                            _ => None,
+                        },
+                        keyboard::Key::Character(c) => {
+                            let s = c.as_str();
+                            if modifiers.control() {
+                                match s {
+                                    "d" => Some(Message::ScrollBy(360.0)),
+                                    "u" => Some(Message::ScrollBy(-360.0)),
+                                    "f" => Some(Message::SearchOpen),
+                                    "b" => {
+                                        if sidebar_open {
+                                            Some(Message::FocusSidebar)
+                                        } else {
+                                            Some(Message::ToggleSidebar)
+                                        }
+                                    }
+                                    "t" => Some(Message::CycleTheme),
+                                    _ => None,
+                                }
+                            } else if modifiers.alt() {
+                                None
                             } else {
-                                Some(Message::FocusNextLink)
+                                match s {
+                                    "j" => Some(Message::ScrollBy(LINE_SCROLL)),
+                                    "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
+                                    "h" => Some(Message::HistoryBack),
+                                    "l" => Some(Message::HistoryForward),
+                                    "n" => Some(Message::SearchNext),
+                                    "p" => Some(Message::SearchPrev),
+                                    "/" | "?" => Some(Message::SearchOpen),
+                                    "o" => {
+                                        if sidebar_open {
+                                            Some(Message::FocusSidebar)
+                                        } else {
+                                            Some(Message::ToggleSidebar)
+                                        }
+                                    }
+                                    _ => None,
+                                }
                             }
                         }
-                        keyboard::key::Named::Enter => Some(Message::ActivateLink),
                         _ => None,
-                    },
-                    keyboard::Key::Character(c) => {
-                        let s = c.as_str();
-                        if modifiers.control() {
-                            match s {
-                                "d" => Some(Message::ScrollBy(360.0)),
-                                "u" => Some(Message::ScrollBy(-360.0)),
-                                "f" => Some(Message::SearchOpen),
-                                "b" => Some(Message::ToggleSidebar),
-                                "t" => Some(Message::CycleTheme),
-                                _ => None,
-                            }
-                        } else if modifiers.alt() {
-                            None
-                        } else {
-                            match s {
-                                "j" => Some(Message::ScrollBy(LINE_SCROLL)),
-                                "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
-                                "h" => Some(Message::HistoryBack),
-                                "l" => Some(Message::HistoryForward),
-                                "n" => Some(Message::SearchNext),
-                                "p" => Some(Message::SearchPrev),
-                                "/" | "?" => Some(Message::SearchOpen),
-                                _ => None,
-                            }
-                        }
                     }
-                    _ => None,
-                }
-            });
+                },
+            );
 
         // Global mouse event subscription for sidebar drag tracking
         let mouse_events = event::listen_with(|event, _status, _window| match event {
