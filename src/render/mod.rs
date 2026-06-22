@@ -34,15 +34,19 @@ use mdr::markdown::{self as md_helpers};
 use mdr::theme::ThemeArg;
 use mdr::watcher;
 
+mod images;
+mod navigation;
+mod search;
+mod sidebar;
 mod state;
 mod styles;
 mod widget;
 
+use navigation as nav;
 pub use state::ViewerConfig;
 use state::{
-    DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, ImageData, LINE_SCROLL, MAX_SIDEBAR_RATIO,
-    MIN_SIDEBAR_RATIO, MdrApp, Message, NavEntry, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID,
-    SIDEBAR_SCROLLABLE_ID,
+    DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, LINE_SCROLL, MdrApp, Message, NavEntry, Overlay,
+    SCROLLABLE_ID, SEARCH_INPUT_ID,
 };
 use widget::MdrViewer;
 
@@ -176,11 +180,6 @@ impl AppInit {
             .unwrap_or(Path::new("."))
             .to_path_buf();
         let network_enabled = self.network_enabled;
-        let image_urls: Vec<String> = content
-            .images()
-            .iter()
-            .map(|u| u.as_str().to_owned())
-            .collect();
 
         let mut app = MdrApp {
             raw_markdown: self.markdown_src,
@@ -222,25 +221,10 @@ impl AppInit {
         };
 
         // Pre-render mermaid diagrams
-        app.prerender_mermaid();
+        images::prerender_mermaid(&mut app);
 
         // Mark image URLs as pending and spawn loading tasks
-        for url in &image_urls {
-            app.image_pending.insert(url.clone());
-        }
-
-        let task = if image_urls.is_empty() {
-            Task::none()
-        } else {
-            Task::batch(image_urls.into_iter().map(move |url| {
-                let base = base_dir.clone();
-                let net = network_enabled;
-                Task::perform(
-                    async move { load_image_async(&url, &base, net).await },
-                    |(url, data)| Message::ImageLoaded(url, data),
-                )
-            }))
-        };
+        let task = images::spawn_image_loads(&mut app);
 
         (app, task)
     }
@@ -248,38 +232,20 @@ impl AppInit {
 
 impl MdrApp {
     // -----------------------------------------------------------------------
-    // Scroll helpers
-    // -----------------------------------------------------------------------
-
-    /// Convert a content fraction (line / total_lines, in 0.0..1.0) to a
-    /// `RelativeOffset.y` suitable for `snap_to`. This accounts for the
-    /// viewport height so the target line lands at the **top** of the window.
-    /// Naturally clamps to 1.0, which handles the "last section" case where
-    /// there isn't enough content below to fill the viewport.
-    fn content_fraction_to_scroll_y(&self, fraction: f32) -> f32 {
-        let max_scroll = self.content_height - self.viewport_height;
-        if max_scroll <= 0.0 || self.content_height <= 0.0 {
-            // Content fits in viewport or dimensions unknown yet — use fraction directly
-            return fraction.clamp(0.0, 1.0);
-        }
-        ((fraction * self.content_height) / max_scroll).clamp(0.0, 1.0)
-    }
-
-    /// Convert the current relative scroll offset back to an approximate
-    /// content fraction (for determining which section is visible).
-    fn scroll_y_to_content_fraction(&self) -> f32 {
-        let max_scroll = self.content_height - self.viewport_height;
-        if max_scroll <= 0.0 || self.content_height <= 0.0 {
-            return self.current_scroll_y;
-        }
-        (self.current_scroll_y * max_scroll) / self.content_height
-    }
-
-    // -----------------------------------------------------------------------
     // Update
     // -----------------------------------------------------------------------
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // Delegate to feature-specific handlers first (avoids cloning —
+        // unhandled messages are returned via Err).
+        let message = match search::handle_message(self, message) {
+            Ok(task) => return task,
+            Err(msg) => msg,
+        };
+        let message = match sidebar::handle_message(self, message) {
+            Ok(task) => return task,
+            Err(msg) => msg,
+        };
         match message {
             Message::LinkClicked(url) => self.handle_link(url),
             Message::ScrollBy(delta) => {
@@ -340,53 +306,10 @@ impl MdrApp {
                         None => 0,
                     };
                     self.current_hit = Some(next);
-                    self.scroll_to_current_hit()
+                    search::scroll_to_current_hit(self)
                 } else {
                     Task::none()
                 }
-            }
-            Message::SearchOpen => {
-                self.focused_link = None;
-                self.search_mode = true;
-                operation::focus(Id::new(SEARCH_INPUT_ID))
-            }
-            Message::SearchClose => {
-                self.search_mode = false;
-                self.search_query.clear();
-                self.search_hits.clear();
-                self.current_hit = None;
-                Task::none()
-            }
-            Message::SearchInput(q) => {
-                self.search_query = q;
-                self.recompute_search_hits();
-                self.scroll_to_current_hit()
-            }
-            Message::SearchSubmit => {
-                self.recompute_search_hits();
-                self.search_mode = false;
-                self.scroll_to_current_hit()
-            }
-            Message::SearchNext => {
-                if !self.search_hits.is_empty() {
-                    let next = match self.current_hit {
-                        Some(i) => (i + 1) % self.search_hits.len(),
-                        None => 0,
-                    };
-                    self.current_hit = Some(next);
-                }
-                self.scroll_to_current_hit()
-            }
-            Message::SearchPrev => {
-                if !self.search_hits.is_empty() {
-                    let prev = match self.current_hit {
-                        Some(0) => self.search_hits.len() - 1,
-                        Some(i) => i - 1,
-                        None => self.search_hits.len() - 1,
-                    };
-                    self.current_hit = Some(prev);
-                }
-                self.scroll_to_current_hit()
             }
             Message::ThemeChanged(theme_arg) => {
                 self.active_theme = theme_arg;
@@ -421,91 +344,12 @@ impl MdrApp {
                 self.overlay = Overlay::None;
                 Task::none()
             }
-            Message::SidebarToggleVisibility => {
-                // Ctrl-B: closed → open+focus+select; open → close+unfocus
-                if self.sidebar_open {
-                    self.sidebar_open = false;
-                    self.sidebar_focused = false;
-                    Task::none()
-                } else {
-                    self.sidebar_open = true;
-                    self.sidebar_focused = true;
-                    self.sidebar_selected = self.section_for_scroll_position();
-                    self.snap_sidebar_to_selected()
-                }
-            }
-            Message::SidebarToggleFocus => {
-                // 'o': closed → open+focus+select; open+unfocused → focus+select;
-                //       open+focused → unfocus (sidebar stays visible)
-                if !self.sidebar_open {
-                    self.sidebar_open = true;
-                    self.sidebar_focused = true;
-                    self.sidebar_selected = self.section_for_scroll_position();
-                    self.snap_sidebar_to_selected()
-                } else if !self.sidebar_focused {
-                    self.sidebar_focused = true;
-                    self.sidebar_selected = self.section_for_scroll_position();
-                    self.snap_sidebar_to_selected()
-                } else {
-                    self.sidebar_focused = false;
-                    Task::none()
-                }
-            }
-            Message::UnfocusSidebar => {
-                self.sidebar_focused = false;
-                Task::none()
-            }
-            Message::SidebarNext => {
-                if self.toc.is_empty() {
-                    return Task::none();
-                }
-                let next = match self.sidebar_selected {
-                    Some(i) if i + 1 < self.toc.len() => i + 1,
-                    Some(i) => i,
-                    None => 0,
-                };
-                self.sidebar_selected = Some(next);
-                self.snap_sidebar_to_selected()
-            }
-            Message::SidebarPrev => {
-                if self.toc.is_empty() {
-                    return Task::none();
-                }
-                let prev = match self.sidebar_selected {
-                    Some(0) | None => 0,
-                    Some(i) => i - 1,
-                };
-                self.sidebar_selected = Some(prev);
-                self.snap_sidebar_to_selected()
-            }
-            Message::SidebarActivate => {
-                if let Some(idx) = self.sidebar_selected {
-                    self.sidebar_focused = false;
-                    return self.update(Message::NavigateToHeading(idx));
-                }
-                Task::none()
-            }
-            Message::SidebarDragStart => {
-                self.sidebar_dragging = true;
-                Task::none()
-            }
-            Message::SidebarDragMove(x) => {
-                if self.sidebar_dragging {
-                    self.sidebar_ratio =
-                        (x / self.window_width).clamp(MIN_SIDEBAR_RATIO, MAX_SIDEBAR_RATIO);
-                }
-                Task::none()
-            }
-            Message::SidebarDragEnd => {
-                self.sidebar_dragging = false;
-                Task::none()
-            }
             Message::NavigateToHeading(idx) => {
                 if let Some(entry) = self.toc.get(idx) {
                     let total_lines = self.raw_markdown.lines().count() as f32;
                     if total_lines > 0.0 {
                         let fraction = (entry.line as f32) / total_lines;
-                        let target_y = self.content_fraction_to_scroll_y(fraction);
+                        let target_y = nav::content_fraction_to_scroll_y(self, fraction);
                         self.last_scroll_y = self.current_scroll_y;
                         self.push_nav(self.file_path.clone(), target_y);
                         let offset = RelativeOffset {
@@ -517,7 +361,7 @@ impl MdrApp {
                 }
                 Task::none()
             }
-            Message::Tick => self.poll_watcher(),
+            Message::Tick => images::poll_watcher(self),
             Message::Scrolled(viewport) => {
                 self.current_scroll_y = viewport.relative_offset().y;
                 self.content_height = viewport.content_bounds().height;
@@ -572,6 +416,7 @@ impl MdrApp {
                     Task::none()
                 }
             }
+            _ => Task::none(),
         }
     }
 
@@ -678,7 +523,7 @@ impl MdrApp {
 
         // --- Sidebar + content area ---
         let main_body: Element<'_, Message> = if self.sidebar_open && !self.toc.is_empty() {
-            let sidebar = self.build_sidebar();
+            let sidebar = sidebar::build_sidebar(self);
 
             // Drag handle: a narrow vertical rule wrapped in a MouseArea
             let drag_handle: Element<'_, Message> = mouse_area(
@@ -713,65 +558,6 @@ impl MdrApp {
 
         layout = layout.push(status_bar);
         layout.into()
-    }
-
-    /// Build the collapsible left sidebar showing document outline.
-    fn build_sidebar(&self) -> Element<'_, Message> {
-        let min_level = self.toc.iter().map(|e| e.level).min().unwrap_or(1);
-
-        let mut items = column![].spacing(2).padding([8, 4]);
-
-        for (idx, entry) in self.toc.iter().enumerate() {
-            let indent = ((entry.level - min_level) as u16) * 12;
-            let is_selected = self.sidebar_focused && self.sidebar_selected == Some(idx);
-            let label = text(&entry.text).size(13);
-            let btn_style = if is_selected {
-                button::primary
-            } else {
-                button::text
-            };
-            let btn = button(label)
-                .on_press(Message::NavigateToHeading(idx))
-                .padding([2, 4])
-                .style(btn_style);
-
-            let left_pad = iced::Padding::ZERO.left((indent as f32) * 1.0);
-            items = items.push(container(btn).padding(left_pad));
-        }
-
-        let header_text = if self.sidebar_focused {
-            "Outline ●"
-        } else {
-            "Outline"
-        };
-        let header = row![
-            text(header_text).size(13),
-            container(
-                button(text("✕").size(11))
-                    .on_press(Message::SidebarToggleVisibility)
-                    .padding(2)
-                    .style(button::text)
-            )
-            .width(Length::Fill)
-            .align_x(iced::Alignment::End),
-        ]
-        .align_y(iced::Alignment::Center)
-        .padding([4, 8])
-        .width(Length::Fill);
-
-        container(
-            column![
-                header,
-                scrollable(items)
-                    .id(Id::new(SIDEBAR_SCROLLABLE_ID))
-                    .height(Length::Fill)
-            ]
-            .height(Length::Fill)
-            .width(Length::Fixed(self.window_width * self.sidebar_ratio)),
-        )
-        .height(Length::Fill)
-        .style(container::rounded_box)
-        .into()
     }
 
     /// Build the permanent bottom status bar.
@@ -1124,7 +910,7 @@ impl MdrApp {
     fn restore_nav_entry(&mut self) -> Task<Message> {
         let entry = self.nav_history[self.nav_index].clone();
         let image_task = if entry.file_path != self.file_path {
-            self.load_file(&entry.file_path)
+            images::load_file(self, &entry.file_path)
         } else {
             Task::none()
         };
@@ -1161,7 +947,7 @@ impl MdrApp {
         };
         if target.exists() && target.is_file() {
             self.push_nav(target.clone(), 0.0);
-            let image_task = self.load_file(&target);
+            let image_task = images::load_file(self, &target);
             Task::batch([
                 image_task,
                 operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 }),
@@ -1205,7 +991,7 @@ impl MdrApp {
                 let slug_bare = slug.strip_prefix('#').unwrap_or(&slug);
                 if slug_bare == target_anchor {
                     let fraction = (i as f32) / total_lines;
-                    return Some(self.content_fraction_to_scroll_y(fraction));
+                    return Some(nav::content_fraction_to_scroll_y(self, fraction));
                 }
             }
         }
@@ -1222,7 +1008,7 @@ impl MdrApp {
                     md_helpers::normalize_for_match(&heading_text.replace('`', "").to_lowercase());
                 if heading_normalized == anchor_normalized {
                     let fraction = (i as f32) / total_lines;
-                    return Some(self.content_fraction_to_scroll_y(fraction));
+                    return Some(nav::content_fraction_to_scroll_y(self, fraction));
                 }
             }
         }
@@ -1236,257 +1022,8 @@ impl MdrApp {
         }
         let line = self.links[idx].line as f32;
         let fraction = line / total_lines;
-        let y = self.content_fraction_to_scroll_y(fraction);
+        let y = nav::content_fraction_to_scroll_y(self, fraction);
         let offset = RelativeOffset { x: 0.0, y };
         operation::snap_to(Id::new(SCROLLABLE_ID), offset)
-    }
-    fn section_for_scroll_position(&self) -> Option<usize> {
-        if self.toc.is_empty() {
-            return None;
-        }
-        let total_lines = self.raw_markdown.lines().count() as f32;
-        if total_lines <= 0.0 {
-            return Some(0);
-        }
-        let content_fraction = self.scroll_y_to_content_fraction();
-        let current_line = (content_fraction * total_lines) as usize;
-        let mut best = 0;
-        for (i, entry) in self.toc.iter().enumerate() {
-            if entry.line <= current_line {
-                best = i;
-            } else {
-                break;
-            }
-        }
-        Some(best)
-    }
-    /// Scroll the sidebar so the currently selected heading is visible.
-    fn snap_sidebar_to_selected(&self) -> Task<Message> {
-        let selected = match self.sidebar_selected {
-            Some(i) => i,
-            None => return Task::none(),
-        };
-        let total = self.toc.len();
-        if total == 0 {
-            return Task::none();
-        }
-        let y = if total <= 1 {
-            0.0
-        } else {
-            (selected as f32) / ((total - 1) as f32)
-        };
-        operation::snap_to(Id::new(SIDEBAR_SCROLLABLE_ID), RelativeOffset { x: 0.0, y })
-    }
-
-    // -----------------------------------------------------------------------
-    // File loading
-    // -----------------------------------------------------------------------
-
-    fn load_file(&mut self, path: &Path) -> Task<Message> {
-        match std::fs::read_to_string(path) {
-            Ok(src) => {
-                self.links = md_helpers::extract_links(&src);
-                self.toc = md_helpers::extract_toc(&src);
-                self.focused_link = None;
-                self.raw_markdown = src;
-                self.content = markdown::Content::parse(&self.raw_markdown);
-                self.file_path = path.to_path_buf();
-                self.base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-                self.title = format!(
-                    "mdr — {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
-                self.search_hits.clear();
-                self.current_hit = None;
-                self.spawn_image_loads()
-            }
-            Err(e) => {
-                eprintln!("Warning: could not read '{}': {e}", path.display());
-                Task::none()
-            }
-        }
-    }
-
-    fn poll_watcher(&mut self) -> Task<Message> {
-        let Some(ref rx) = self.watcher_rx else {
-            return Task::none();
-        };
-        if rx.try_recv().is_ok() {
-            while rx.try_recv().is_ok() {}
-            match std::fs::read_to_string(&self.file_path) {
-                Ok(new_content) => {
-                    self.links = md_helpers::extract_links(&new_content);
-                    self.toc = md_helpers::extract_toc(&new_content);
-                    self.focused_link = None;
-                    self.raw_markdown = new_content;
-                    self.content = markdown::Content::parse(&self.raw_markdown);
-                    return self.spawn_image_loads();
-                }
-                Err(e) => eprintln!("Warning: could not reload file: {e}"),
-            }
-        }
-        Task::none()
-    }
-
-    /// Spawn async image loading tasks for all images in the current content.
-    fn spawn_image_loads(&mut self) -> Task<Message> {
-        // Pre-render mermaid diagrams into the cache
-        self.prerender_mermaid();
-
-        let image_urls: Vec<String> = self
-            .content
-            .images()
-            .iter()
-            .filter(|u| {
-                let s = u.as_str();
-                !self.image_cache.contains_key(s) && !self.image_failed.contains(s)
-            })
-            .map(|u| u.as_str().to_owned())
-            .collect();
-
-        if image_urls.is_empty() {
-            return Task::none();
-        }
-
-        // Mark all URLs as pending
-        for url in &image_urls {
-            self.image_pending.insert(url.clone());
-        }
-
-        let base_dir = self.base_dir.clone();
-        let network_enabled = self.network_enabled;
-
-        Task::batch(image_urls.into_iter().map(move |url| {
-            let base = base_dir.clone();
-            let net = network_enabled;
-            Task::perform(
-                async move { load_image_async(&url, &base, net).await },
-                |(url, data)| Message::ImageLoaded(url, data),
-            )
-        }))
-    }
-
-    /// Pre-render all mermaid code blocks and cache their SVG output.
-    fn prerender_mermaid(&mut self) {
-        use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-
-        let parser = Parser::new_ext(&self.raw_markdown, Options::all());
-        let mut in_mermaid = false;
-        let mut code_buf = String::new();
-
-        for event in parser {
-            match event {
-                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
-                    if lang.as_ref() == "mermaid" =>
-                {
-                    in_mermaid = true;
-                    code_buf.clear();
-                }
-                Event::End(TagEnd::CodeBlock) if in_mermaid => {
-                    in_mermaid = false;
-                    if !self.mermaid_cache.contains_key(&code_buf)
-                        && let Ok(svg_str) = mermaid_rs_renderer::render(&code_buf)
-                    {
-                        self.mermaid_cache
-                            .insert(code_buf.clone(), svg_str.into_bytes());
-                    }
-                }
-                Event::Text(t) if in_mermaid => {
-                    code_buf.push_str(&t);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Search helpers
-    // -----------------------------------------------------------------------
-
-    fn recompute_search_hits(&mut self) {
-        self.search_hits.clear();
-        self.current_hit = None;
-
-        if self.search_query.is_empty() {
-            return;
-        }
-
-        let query_lower = self.search_query.to_lowercase();
-
-        for (i, line) in self.raw_markdown.lines().enumerate() {
-            if line.to_lowercase().contains(&query_lower) {
-                self.search_hits.push(i);
-            }
-        }
-
-        if !self.search_hits.is_empty() {
-            self.current_hit = Some(0);
-        }
-    }
-
-    fn scroll_to_current_hit(&self) -> Task<Message> {
-        let Some(hit_idx) = self.current_hit else {
-            return Task::none();
-        };
-        let Some(&line_num) = self.search_hits.get(hit_idx) else {
-            return Task::none();
-        };
-
-        let total_lines = self.raw_markdown.lines().count() as f32;
-        if total_lines <= 0.0 {
-            return Task::none();
-        }
-
-        let fraction = (line_num as f32) / total_lines;
-        let y = self.content_fraction_to_scroll_y(fraction);
-        let offset = RelativeOffset { x: 0.0, y };
-        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Async image loading
-// ---------------------------------------------------------------------------
-
-/// Load an image from a local file path or network URL.
-///
-/// Returns `(url, Some(ImageData))` on success, `(url, None)` on failure.
-async fn load_image_async(
-    url: &str,
-    base_dir: &Path,
-    network_enabled: bool,
-) -> (String, Option<ImageData>) {
-    let result = load_image_inner(url, base_dir, network_enabled).await;
-    (url.to_owned(), result)
-}
-
-async fn load_image_inner(url: &str, base_dir: &Path, network_enabled: bool) -> Option<ImageData> {
-    let is_remote = url.starts_with("http://") || url.starts_with("https://");
-
-    let bytes = if is_remote {
-        if !network_enabled {
-            return None;
-        }
-        reqwest::get(url).await.ok()?.bytes().await.ok()?.to_vec()
-    } else {
-        // Local file: resolve relative to base_dir
-        let path = if Path::new(url).is_absolute() {
-            PathBuf::from(url)
-        } else {
-            base_dir.join(url)
-        };
-        std::fs::read(&path).ok()?
-    };
-
-    // Detect SVG by content or extension
-    let is_svg = url.ends_with(".svg")
-        || bytes.starts_with(b"<?xml")
-        || bytes.starts_with(b"<svg")
-        || bytes.windows(4).take(256).any(|w| w == b"<svg");
-
-    if is_svg {
-        Some(ImageData::Svg(bytes))
-    } else {
-        Some(ImageData::Raster(bytes))
     }
 }
