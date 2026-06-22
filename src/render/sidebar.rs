@@ -5,9 +5,7 @@ use iced::widget::{Id, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Task};
 
 use super::navigation;
-use super::state::{
-    MAX_SIDEBAR_RATIO, MIN_SIDEBAR_RATIO, MdrApp, Message, SCROLLABLE_ID, SIDEBAR_SCROLLABLE_ID,
-};
+use super::state::{MAX_SIDEBAR_RATIO, MIN_SIDEBAR_RATIO, MdrApp, Message, SIDEBAR_SCROLLABLE_ID};
 
 // ---------------------------------------------------------------------------
 // Message handler — dispatches sidebar-related messages.
@@ -100,21 +98,8 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Result<Task<
             Ok(Task::none())
         }
         Message::NavigateToHeading(idx) => {
-            if let Some(entry) = app.toc.get(idx) {
-                let total_lines = app.raw_markdown.lines().count() as f32;
-                if total_lines > 0.0 {
-                    let fraction = (entry.line as f32) / total_lines;
-                    let target_y = navigation::content_fraction_to_scroll_y(app, fraction);
-                    app.last_scroll_y = app.current_scroll_y;
-                    app.push_nav(app.file_path.clone(), target_y);
-                    let offset = RelativeOffset {
-                        x: 0.0,
-                        y: target_y,
-                    };
-                    return Ok(operation::snap_to(Id::new(SCROLLABLE_ID), offset));
-                }
-            }
-            Ok(Task::none())
+            app.sidebar_focused = false;
+            Ok(navigation::navigate_to_heading(app, idx))
         }
         other => Err(other),
     }

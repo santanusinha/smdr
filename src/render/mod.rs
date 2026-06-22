@@ -42,7 +42,6 @@ mod state;
 mod styles;
 mod widget;
 
-use navigation as nav;
 pub use state::ViewerConfig;
 use state::{
     DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, LINE_SCROLL, MdrApp, Message, NavEntry, Overlay,
@@ -247,7 +246,7 @@ impl MdrApp {
             Err(msg) => msg,
         };
         match message {
-            Message::LinkClicked(url) => self.handle_link(url),
+            Message::LinkClicked(url) => navigation::handle_link(self, url),
             Message::ScrollBy(delta) => {
                 self.focused_link = None;
                 operation::scroll_by(Id::new(SCROLLABLE_ID), AbsoluteOffset { x: 0.0, y: delta })
@@ -259,7 +258,7 @@ impl MdrApp {
                 self.focused_link = None;
                 self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
                 self.nav_index -= 1;
-                self.restore_nav_entry()
+                navigation::restore_nav_entry(self)
             }
             Message::HistoryForward => {
                 if self.nav_index + 1 >= self.nav_history.len() {
@@ -268,7 +267,7 @@ impl MdrApp {
                 self.focused_link = None;
                 self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
                 self.nav_index += 1;
-                self.restore_nav_entry()
+                navigation::restore_nav_entry(self)
             }
             Message::FocusNextLink => {
                 if self.links.is_empty() {
@@ -279,7 +278,7 @@ impl MdrApp {
                     None => 0,
                 };
                 self.focused_link = Some(next);
-                self.scroll_to_link(next)
+                navigation::scroll_to_link(self, next)
             }
             Message::FocusPrevLink => {
                 if self.links.is_empty() {
@@ -291,14 +290,14 @@ impl MdrApp {
                     None => self.links.len() - 1,
                 };
                 self.focused_link = Some(prev);
-                self.scroll_to_link(prev)
+                navigation::scroll_to_link(self, prev)
             }
             Message::ActivateLink => {
                 if self.focused_link.is_some() {
                     let idx = self.focused_link.unwrap();
                     let url = self.links[idx].url.clone();
                     self.focused_link = None;
-                    self.handle_link(url)
+                    navigation::handle_link(self, url)
                 } else if !self.search_hits.is_empty() {
                     // Enter cycles to next search hit when no link is focused
                     let next = match self.current_hit {
@@ -344,23 +343,7 @@ impl MdrApp {
                 self.overlay = Overlay::None;
                 Task::none()
             }
-            Message::NavigateToHeading(idx) => {
-                if let Some(entry) = self.toc.get(idx) {
-                    let total_lines = self.raw_markdown.lines().count() as f32;
-                    if total_lines > 0.0 {
-                        let fraction = (entry.line as f32) / total_lines;
-                        let target_y = nav::content_fraction_to_scroll_y(self, fraction);
-                        self.last_scroll_y = self.current_scroll_y;
-                        self.push_nav(self.file_path.clone(), target_y);
-                        let offset = RelativeOffset {
-                            x: 0.0,
-                            y: target_y,
-                        };
-                        return operation::snap_to(Id::new(SCROLLABLE_ID), offset);
-                    }
-                }
-                Task::none()
-            }
+            Message::NavigateToHeading(idx) => navigation::navigate_to_heading(self, idx),
             Message::Tick => images::poll_watcher(self),
             Message::Scrolled(viewport) => {
                 self.current_scroll_y = viewport.relative_offset().y;
@@ -889,141 +872,5 @@ impl MdrApp {
         let window_resize =
             iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size));
         Subscription::batch([keys, mouse_events, window_resize, ticker])
-    }
-
-    // -----------------------------------------------------------------------
-    // Navigation history helpers
-    // -----------------------------------------------------------------------
-
-    /// Push a new navigation entry, truncating any forward history.
-    fn push_nav(&mut self, file_path: PathBuf, scroll_y: f32) {
-        self.nav_history[self.nav_index].scroll_y = self.current_scroll_y;
-        self.nav_history.truncate(self.nav_index + 1);
-        self.nav_history.push(NavEntry {
-            file_path,
-            scroll_y,
-        });
-        self.nav_index = self.nav_history.len() - 1;
-    }
-
-    /// Restore the view to the entry at `nav_index`.
-    fn restore_nav_entry(&mut self) -> Task<Message> {
-        let entry = self.nav_history[self.nav_index].clone();
-        let image_task = if entry.file_path != self.file_path {
-            images::load_file(self, &entry.file_path)
-        } else {
-            Task::none()
-        };
-        let offset = RelativeOffset {
-            x: 0.0,
-            y: entry.scroll_y,
-        };
-        Task::batch([
-            image_task,
-            operation::snap_to(Id::new(SCROLLABLE_ID), offset),
-        ])
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    fn handle_link(&mut self, url: String) -> Task<Message> {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            let _ = open::that(&url);
-            return Task::none();
-        }
-
-        if let Some(anchor) = url.strip_prefix('#') {
-            return self.navigate_to_anchor(anchor);
-        }
-
-        // Local file link
-        let raw = url.strip_prefix("file://").unwrap_or(&url);
-        let target = if Path::new(raw).is_absolute() {
-            PathBuf::from(raw)
-        } else {
-            let base = self.file_path.parent().unwrap_or(Path::new("."));
-            base.join(raw)
-        };
-        if target.exists() && target.is_file() {
-            self.push_nav(target.clone(), 0.0);
-            let image_task = images::load_file(self, &target);
-            Task::batch([
-                image_task,
-                operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 }),
-            ])
-        } else {
-            eprintln!("Warning: could not open '{}'", target.display());
-            Task::none()
-        }
-    }
-
-    /// Navigate to an in-document anchor and push to navigation history.
-    fn navigate_to_anchor(&mut self, anchor: &str) -> Task<Message> {
-        if let Some(target_y) = self.compute_anchor_y(anchor) {
-            self.push_nav(self.file_path.clone(), target_y);
-            let offset = RelativeOffset {
-                x: 0.0,
-                y: target_y,
-            };
-            operation::snap_to(Id::new(SCROLLABLE_ID), offset)
-        } else {
-            Task::none()
-        }
-    }
-
-    fn compute_anchor_y(&self, anchor: &str) -> Option<f32> {
-        use std::collections::HashMap;
-
-        let total_lines = self.raw_markdown.lines().count() as f32;
-        if total_lines <= 0.0 {
-            return None;
-        }
-
-        let target_anchor = anchor.to_lowercase();
-
-        // Pass 1: exact slug match using GitHub-style slug generation
-        let mut seen: HashMap<String, u32> = HashMap::new();
-
-        for (i, line) in self.raw_markdown.lines().enumerate() {
-            if let Some(heading_text) = md_helpers::extract_atx_heading(line) {
-                let slug = md_helpers::github_slug(heading_text, &mut seen);
-                let slug_bare = slug.strip_prefix('#').unwrap_or(&slug);
-                if slug_bare == target_anchor {
-                    let fraction = (i as f32) / total_lines;
-                    return Some(nav::content_fraction_to_scroll_y(self, fraction));
-                }
-            }
-        }
-
-        // Pass 2: relaxed match
-        let anchor_normalized = md_helpers::normalize_for_match(&target_anchor);
-        if anchor_normalized.is_empty() {
-            return None;
-        }
-
-        for (i, line) in self.raw_markdown.lines().enumerate() {
-            if let Some(heading_text) = md_helpers::extract_atx_heading(line) {
-                let heading_normalized =
-                    md_helpers::normalize_for_match(&heading_text.replace('`', "").to_lowercase());
-                if heading_normalized == anchor_normalized {
-                    let fraction = (i as f32) / total_lines;
-                    return Some(nav::content_fraction_to_scroll_y(self, fraction));
-                }
-            }
-        }
-
-        None
-    }
-    fn scroll_to_link(&self, idx: usize) -> Task<Message> {
-        let total_lines = self.raw_markdown.lines().count() as f32;
-        if total_lines <= 0.0 {
-            return Task::none();
-        }
-        let line = self.links[idx].line as f32;
-        let fraction = line / total_lines;
-        let y = nav::content_fraction_to_scroll_y(self, fraction);
-        let offset = RelativeOffset { x: 0.0, y };
-        operation::snap_to(Id::new(SCROLLABLE_ID), offset)
     }
 }
