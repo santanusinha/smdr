@@ -251,6 +251,10 @@ impl AppInit {
             mermaid_cache: HashMap::new(),
             network_enabled,
             base_dir: base_dir.clone(),
+            pending_key: None,
+            last_scroll_y: 0.0,
+            content_height: 0.0,
+            viewport_height: 0.0,
         };
 
         // Pre-render mermaid diagrams
@@ -372,6 +376,11 @@ enum Message {
     Scrolled(scrollable::Viewport),
     WindowResized(iced::Size),
     ImageLoaded(String, Option<ImageData>),
+    ScrollToTop,
+    ScrollToBottom,
+    JumpToLastPosition,
+    ExitApp,
+    PendingKey(char),
 }
 
 // ---------------------------------------------------------------------------
@@ -426,9 +435,45 @@ struct MdrApp {
     network_enabled: bool,
     /// Base directory for resolving relative image paths.
     base_dir: PathBuf,
+    /// Pending key for multi-key sequences (gg, GG, qq, ZZ, ``).
+    pending_key: Option<char>,
+    /// Last scroll position before a jump (for `` to return).
+    last_scroll_y: f32,
+    /// Total content height in pixels (updated on scroll events).
+    content_height: f32,
+    /// Visible viewport height in pixels (updated on scroll events).
+    viewport_height: f32,
 }
 
 impl MdrApp {
+    // -----------------------------------------------------------------------
+    // Scroll helpers
+    // -----------------------------------------------------------------------
+
+    /// Convert a content fraction (line / total_lines, in 0.0..1.0) to a
+    /// `RelativeOffset.y` suitable for `snap_to`. This accounts for the
+    /// viewport height so the target line lands at the **top** of the window.
+    /// Naturally clamps to 1.0, which handles the "last section" case where
+    /// there isn't enough content below to fill the viewport.
+    fn content_fraction_to_scroll_y(&self, fraction: f32) -> f32 {
+        let max_scroll = self.content_height - self.viewport_height;
+        if max_scroll <= 0.0 || self.content_height <= 0.0 {
+            // Content fits in viewport or dimensions unknown yet — use fraction directly
+            return fraction.clamp(0.0, 1.0);
+        }
+        ((fraction * self.content_height) / max_scroll).clamp(0.0, 1.0)
+    }
+
+    /// Convert the current relative scroll offset back to an approximate
+    /// content fraction (for determining which section is visible).
+    fn scroll_y_to_content_fraction(&self) -> f32 {
+        let max_scroll = self.content_height - self.viewport_height;
+        if max_scroll <= 0.0 || self.content_height <= 0.0 {
+            return self.current_scroll_y;
+        }
+        (self.current_scroll_y * max_scroll) / self.content_height
+    }
+
     // -----------------------------------------------------------------------
     // Update
     // -----------------------------------------------------------------------
@@ -658,7 +703,9 @@ impl MdrApp {
                 if let Some(entry) = self.toc.get(idx) {
                     let total_lines = self.raw_markdown.lines().count() as f32;
                     if total_lines > 0.0 {
-                        let target_y = (entry.line as f32) / total_lines;
+                        let fraction = (entry.line as f32) / total_lines;
+                        let target_y = self.content_fraction_to_scroll_y(fraction);
+                        self.last_scroll_y = self.current_scroll_y;
                         self.push_nav(self.file_path.clone(), target_y);
                         let offset = RelativeOffset {
                             x: 0.0,
@@ -672,6 +719,8 @@ impl MdrApp {
             Message::Tick => self.poll_watcher(),
             Message::Scrolled(viewport) => {
                 self.current_scroll_y = viewport.relative_offset().y;
+                self.content_height = viewport.content_bounds().height;
+                self.viewport_height = viewport.bounds().height;
                 Task::none()
             }
             Message::WindowResized(size) => {
@@ -689,6 +738,38 @@ impl MdrApp {
                     }
                 }
                 Task::none()
+            }
+            Message::ScrollToTop => {
+                self.last_scroll_y = self.current_scroll_y;
+                self.pending_key = None;
+                operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 0.0 })
+            }
+            Message::ScrollToBottom => {
+                self.last_scroll_y = self.current_scroll_y;
+                self.pending_key = None;
+                operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: 1.0 })
+            }
+            Message::JumpToLastPosition => {
+                let target = self.last_scroll_y;
+                self.last_scroll_y = self.current_scroll_y;
+                self.pending_key = None;
+                operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: target })
+            }
+            Message::ExitApp => iced::exit(),
+            Message::PendingKey(ch) => {
+                if self.pending_key == Some(ch) {
+                    self.pending_key = None;
+                    match ch {
+                        'g' => self.update(Message::ScrollToTop),
+                        'G' => self.update(Message::ScrollToBottom),
+                        'q' | 'Z' => self.update(Message::ExitApp),
+                        '`' => self.update(Message::JumpToLastPosition),
+                        _ => Task::none(),
+                    }
+                } else {
+                    self.pending_key = Some(ch);
+                    Task::none()
+                }
             }
         }
     }
@@ -959,32 +1040,51 @@ impl MdrApp {
 
     /// Build the keyboard shortcuts overlay panel.
     fn build_shortcuts_panel(&self) -> Element<'_, Message> {
-        let shortcuts = [
-            ("j / ↓", "Scroll down"),
-            ("k / ↑", "Scroll up"),
-            ("Ctrl-D / PgDn", "Page down"),
-            ("Ctrl-U / PgUp", "Page up"),
-            ("h / ←", "Navigate back"),
-            ("l / →", "Navigate forward"),
-            ("Tab", "Next link"),
-            ("Shift-Tab", "Previous link"),
-            ("Enter", "Activate link / next hit"),
-            ("/ or ?", "Open search"),
-            ("Ctrl-F", "Open search"),
-            ("n", "Next search hit"),
-            ("p", "Previous search hit"),
-            ("Ctrl-B", "Toggle sidebar / focus outline"),
-            ("o", "Focus outline sidebar"),
-            ("Ctrl-T", "Cycle theme"),
-            ("Esc", "Close search / overlay"),
+        // (Action, Primary key, Vim-style key)
+        let shortcuts: &[(&str, &str, &str)] = &[
+            ("Scroll down", "↓", "j"),
+            ("Scroll up", "↑", "k"),
+            ("Page down", "PgDn / Space", "Ctrl-D"),
+            ("Page up", "PgUp", "Ctrl-U"),
+            ("Scroll to top", "Home", "gg"),
+            ("Scroll to bottom", "End", "GG"),
+            ("Jump to last position", "", "``"),
+            ("Navigate back", "←", "h"),
+            ("Navigate forward", "→", "l"),
+            ("Next link", "Tab", ""),
+            ("Previous link", "Shift-Tab", ""),
+            ("Activate link / next hit", "Enter", ""),
+            ("Open search", "Ctrl-F", "/"),
+            ("Next search hit", "", "n"),
+            ("Previous search hit", "", "p"),
+            ("Toggle sidebar", "Ctrl-B", ""),
+            ("Focus outline sidebar", "", "o"),
+            ("Cycle theme", "Ctrl-T", ""),
+            ("Show keymap", "", "?"),
+            ("Exit", "", "qq / ZZ"),
+            ("Close search / overlay", "Esc", ""),
         ];
 
-        let mut shortcut_rows = column![].spacing(4).padding(8);
-        for (key, desc) in shortcuts {
-            shortcut_rows = shortcut_rows.push(
+        // Table header
+        let table_header = row![
+            container(text("Action").size(11)).width(Length::Fixed(180.0)),
+            container(text("Primary").size(11)).width(Length::Fixed(110.0)),
+            container(text("Vim").size(11)).width(Length::Fixed(80.0)),
+        ]
+        .spacing(8);
+
+        let separator = rule::horizontal(1);
+
+        let mut table_rows = column![].spacing(3).padding(8);
+        table_rows = table_rows.push(table_header);
+        table_rows = table_rows.push(separator);
+
+        for (action, primary, vim) in shortcuts {
+            table_rows = table_rows.push(
                 row![
-                    container(text(key).size(12)).width(Length::Fixed(140.0)),
-                    text(desc).size(12),
+                    container(text(*action).size(12)).width(Length::Fixed(180.0)),
+                    container(text(*primary).size(12)).width(Length::Fixed(110.0)),
+                    container(text(*vim).size(12)).width(Length::Fixed(80.0)),
                 ]
                 .spacing(8),
             );
@@ -1003,7 +1103,7 @@ impl MdrApp {
         .align_y(iced::Alignment::Center)
         .width(Length::Fill);
 
-        container(column![header, shortcut_rows].spacing(8).padding(12))
+        container(column![header, table_rows].spacing(8).padding(12))
             .width(Length::Fill)
             .max_width(500)
             .center_x(Length::Fill)
@@ -1063,7 +1163,7 @@ impl MdrApp {
                     key,
                     modifiers,
                     text: _,
-                    modified_key: _,
+                    modified_key,
                     physical_key: _,
                     location: _,
                     repeat: _,
@@ -1127,6 +1227,9 @@ impl MdrApp {
                         keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
                         keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
                         keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
+                        keyboard::key::Named::Home => Some(Message::ScrollToTop),
+                        keyboard::key::Named::End => Some(Message::ScrollToBottom),
+                        keyboard::key::Named::Space => Some(Message::ScrollBy(360.0)),
                         keyboard::key::Named::Tab => {
                             if modifiers.shift() {
                                 Some(Message::FocusPrevLink)
@@ -1137,10 +1240,20 @@ impl MdrApp {
                         keyboard::key::Named::Enter => Some(Message::ActivateLink),
                         _ => None,
                     },
-                    keyboard::Key::Character(c) => {
-                        let s = c.as_str();
+                    keyboard::Key::Character(_) => {
+                        // Use `key` (unmodified) for Ctrl combos, `modified_key`
+                        // (shift-aware) for plain keystrokes so '?' (Shift+/) is
+                        // distinguished from '/' and 'G' (Shift+g) from 'g'.
+                        let ctrl_s = match &key {
+                            keyboard::Key::Character(c) => c.as_str(),
+                            _ => "",
+                        };
+                        let s = match &modified_key {
+                            keyboard::Key::Character(c) => c.as_str(),
+                            _ => "",
+                        };
                         if modifiers.control() {
-                            match s {
+                            match ctrl_s {
                                 "d" => Some(Message::ScrollBy(360.0)),
                                 "u" => Some(Message::ScrollBy(-360.0)),
                                 "f" => Some(Message::SearchOpen),
@@ -1158,8 +1271,12 @@ impl MdrApp {
                                 "l" => Some(Message::HistoryForward),
                                 "n" => Some(Message::SearchNext),
                                 "p" => Some(Message::SearchPrev),
-                                "/" | "?" => Some(Message::SearchOpen),
+                                "/" => Some(Message::SearchOpen),
+                                "?" => Some(Message::ShowShortcuts),
                                 "o" => Some(Message::SidebarToggleFocus),
+                                "g" | "G" | "q" | "Z" | "`" => {
+                                    Some(Message::PendingKey(s.chars().next().unwrap()))
+                                }
                                 _ => None,
                             }
                         }
@@ -1268,7 +1385,6 @@ impl MdrApp {
         }
     }
 
-    /// Compute the relative scroll y-position for a given anchor.
     fn compute_anchor_y(&self, anchor: &str) -> Option<f32> {
         use std::collections::HashMap;
 
@@ -1287,7 +1403,8 @@ impl MdrApp {
                 let slug = github_slug(heading_text, &mut seen);
                 let slug_bare = slug.strip_prefix('#').unwrap_or(&slug);
                 if slug_bare == target_anchor {
-                    return Some((i as f32) / total_lines);
+                    let fraction = (i as f32) / total_lines;
+                    return Some(self.content_fraction_to_scroll_y(fraction));
                 }
             }
         }
@@ -1303,27 +1420,25 @@ impl MdrApp {
                 let heading_normalized =
                     normalize_for_match(&heading_text.replace('`', "").to_lowercase());
                 if heading_normalized == anchor_normalized {
-                    return Some((i as f32) / total_lines);
+                    let fraction = (i as f32) / total_lines;
+                    return Some(self.content_fraction_to_scroll_y(fraction));
                 }
             }
         }
 
         None
     }
-
-    /// Scroll the view to the link at the given index.
     fn scroll_to_link(&self, idx: usize) -> Task<Message> {
         let total_lines = self.raw_markdown.lines().count() as f32;
         if total_lines <= 0.0 {
             return Task::none();
         }
         let line = self.links[idx].line as f32;
-        let ratio = line / total_lines;
-        let offset = RelativeOffset { x: 0.0, y: ratio };
+        let fraction = line / total_lines;
+        let y = self.content_fraction_to_scroll_y(fraction);
+        let offset = RelativeOffset { x: 0.0, y };
         operation::snap_to(Id::new(SCROLLABLE_ID), offset)
     }
-
-    /// Determine the TOC index corresponding to the current main scroll position.
     fn section_for_scroll_position(&self) -> Option<usize> {
         if self.toc.is_empty() {
             return None;
@@ -1332,7 +1447,8 @@ impl MdrApp {
         if total_lines <= 0.0 {
             return Some(0);
         }
-        let current_line = (self.current_scroll_y * total_lines) as usize;
+        let content_fraction = self.scroll_y_to_content_fraction();
+        let current_line = (content_fraction * total_lines) as usize;
         let mut best = 0;
         for (i, entry) in self.toc.iter().enumerate() {
             if entry.line <= current_line {
@@ -1343,7 +1459,6 @@ impl MdrApp {
         }
         Some(best)
     }
-
     /// Scroll the sidebar so the currently selected heading is visible.
     fn snap_sidebar_to_selected(&self) -> Task<Message> {
         let selected = match self.sidebar_selected {
@@ -1521,8 +1636,9 @@ impl MdrApp {
             return Task::none();
         }
 
-        let ratio = (line_num as f32) / total_lines;
-        let offset = RelativeOffset { x: 0.0, y: ratio };
+        let fraction = (line_num as f32) / total_lines;
+        let y = self.content_fraction_to_scroll_y(fraction);
+        let offset = RelativeOffset { x: 0.0, y };
         operation::snap_to(Id::new(SCROLLABLE_ID), offset)
     }
 }
