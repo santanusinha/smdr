@@ -25,63 +25,26 @@ use iced::mouse;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{
-    button, column, container, image as image_widget, markdown, mouse_area, pick_list, rich_text,
-    row, rule, scrollable, svg, text, text_input,
+    button, column, container, markdown, mouse_area, pick_list, row, rule, scrollable, text,
+    text_input,
 };
-use iced::{
-    Background, Color, ContentFit, Element, Event, Length, Pixels, Renderer, Subscription, Task,
-    Theme,
-};
+use iced::{Background, Color, Element, Event, Length, Pixels, Subscription, Task};
 
-use mdr::markdown::{self as md_helpers, DocumentLink, TocEntry};
+use mdr::markdown::{self as md_helpers};
 use mdr::theme::ThemeArg;
 use mdr::watcher;
 
-/// Configuration passed to [`launch`].
-pub struct ViewerConfig {
-    pub theme: ThemeArg,
-    pub watch: bool,
-    /// Allow fetching remote images over the network.
-    pub network_enabled: bool,
-}
+mod state;
+mod styles;
+mod widget;
 
-// ---------------------------------------------------------------------------
-// Image cache types
-// ---------------------------------------------------------------------------
-
-/// Cached image data for display in the viewer.
-#[derive(Debug, Clone)]
-enum ImageData {
-    Svg(Vec<u8>),
-    Raster(Vec<u8>),
-}
-
-/// Pixels scrolled per j/k keypress.
-const LINE_SCROLL: f32 = 40.0;
-
-/// Maximum width for rendered images (pixels).
-const MAX_IMAGE_WIDTH: f32 = 800.0;
-
-/// Scrollable widget ID for programmatic scrolling.
-const SCROLLABLE_ID: &str = "mdr-content-scroll";
-
-/// Text input widget ID for search bar focus.
-const SEARCH_INPUT_ID: &str = "mdr-search-input";
-
-/// Scrollable widget ID for sidebar programmatic scrolling.
-const SIDEBAR_SCROLLABLE_ID: &str = "mdr-sidebar-scroll";
-
-/// Default sidebar ratio (fraction of window width).
-const DEFAULT_SIDEBAR_RATIO: f32 = 0.25;
-
-/// Minimum sidebar ratio.
-const MIN_SIDEBAR_RATIO: f32 = 0.15;
-
-/// Maximum sidebar ratio.
-const MAX_SIDEBAR_RATIO: f32 = 0.40;
-
-/// Initial window width used before the first resize event.
-const INITIAL_WINDOW_WIDTH: f32 = 960.0;
+pub use state::ViewerConfig;
+use state::{
+    DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, ImageData, LINE_SCROLL, MAX_SIDEBAR_RATIO,
+    MIN_SIDEBAR_RATIO, MdrApp, Message, NavEntry, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID,
+    SIDEBAR_SCROLLABLE_ID,
+};
+use widget::MdrViewer;
 
 /// Launches the viewer window and blocks until it is closed.
 ///
@@ -281,141 +244,6 @@ impl AppInit {
 
         (app, task)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Navigation history entry
-// ---------------------------------------------------------------------------
-
-/// A single entry in the browser-like navigation history.
-///
-/// Each entry records the file being viewed and the relative scroll position
-/// (0.0 = top, 1.0 = bottom) at the time of navigation.
-#[derive(Debug, Clone)]
-struct NavEntry {
-    file_path: PathBuf,
-    scroll_y: f32,
-}
-
-// ---------------------------------------------------------------------------
-// Overlay state
-// ---------------------------------------------------------------------------
-// Overlay state
-// ---------------------------------------------------------------------------
-
-/// Which overlay panel (if any) is currently displayed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Overlay {
-    None,
-    Shortcuts,
-    About,
-}
-
-// ---------------------------------------------------------------------------
-// Messages
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-enum Message {
-    LinkClicked(markdown::Uri),
-    ScrollBy(f32),
-    HistoryBack,
-    HistoryForward,
-    FocusNextLink,
-    FocusPrevLink,
-    ActivateLink,
-    SearchOpen,
-    SearchClose,
-    SearchInput(String),
-    SearchSubmit,
-    SearchNext,
-    SearchPrev,
-    ThemeChanged(ThemeArg),
-    CycleTheme,
-    ShowShortcuts,
-    ShowAbout,
-    CloseOverlay,
-    SidebarToggleVisibility,
-    SidebarToggleFocus,
-    UnfocusSidebar,
-    SidebarNext,
-    SidebarPrev,
-    SidebarActivate,
-    SidebarDragStart,
-    SidebarDragMove(f32),
-    SidebarDragEnd,
-    NavigateToHeading(usize),
-    Tick,
-    Scrolled(scrollable::Viewport),
-    WindowResized(iced::Size),
-    ImageLoaded(String, Option<ImageData>),
-    ScrollToTop,
-    ScrollToBottom,
-    JumpToLastPosition,
-    ExitApp,
-    PendingKey(char),
-}
-
-// ---------------------------------------------------------------------------
-// App state
-// ---------------------------------------------------------------------------
-
-struct MdrApp {
-    raw_markdown: String,
-    content: markdown::Content,
-    file_path: PathBuf,
-    watcher_rx: Option<Receiver<()>>,
-    active_theme: ThemeArg,
-    title: String,
-    /// Browser-like navigation history.
-    nav_history: Vec<NavEntry>,
-    /// Current position within `nav_history`.
-    nav_index: usize,
-    /// Live scroll position (relative y offset 0.0..=1.0), updated on every scroll event.
-    current_scroll_y: f32,
-    /// All links in the current document (for Tab navigation).
-    links: Vec<DocumentLink>,
-    /// Currently focused link index (Tab stop), or `None` if no link is focused.
-    focused_link: Option<usize>,
-    search_mode: bool,
-    search_query: String,
-    search_hits: Vec<usize>,
-    current_hit: Option<usize>,
-    overlay: Overlay,
-    /// Table of contents (headings) for sidebar navigation.
-    toc: Vec<TocEntry>,
-    /// Whether the sidebar is visible.
-    sidebar_open: bool,
-    /// Whether keyboard focus is in the sidebar (outline navigation).
-    sidebar_focused: bool,
-    /// Currently selected heading index in the sidebar.
-    sidebar_selected: Option<usize>,
-    /// Current sidebar width as a ratio of window width (0.15..=0.40).
-    sidebar_ratio: f32,
-    /// Whether the user is actively dragging the sidebar resize handle.
-    sidebar_dragging: bool,
-    /// Current window width in pixels (updated on resize events).
-    window_width: f32,
-    /// Cached images keyed by URL.
-    image_cache: HashMap<String, ImageData>,
-    /// URLs that are currently being loaded.
-    image_pending: HashSet<String>,
-    /// URLs that failed to load.
-    image_failed: HashSet<String>,
-    /// Cached mermaid diagram SVGs keyed by source code.
-    mermaid_cache: HashMap<String, Vec<u8>>,
-    /// Whether network fetching is enabled.
-    network_enabled: bool,
-    /// Base directory for resolving relative image paths.
-    base_dir: PathBuf,
-    /// Pending key for multi-key sequences (gg, GG, qq, ZZ, ``).
-    pending_key: Option<char>,
-    /// Last scroll position before a jump (for `` to return).
-    last_scroll_y: f32,
-    /// Total content height in pixels (updated on scroll events).
-    content_height: f32,
-    /// Visible viewport height in pixels (updated on scroll events).
-    viewport_height: f32,
 }
 
 impl MdrApp {
@@ -1613,173 +1441,6 @@ impl MdrApp {
         let y = self.content_fraction_to_scroll_y(fraction);
         let offset = RelativeOffset { x: 0.0, y };
         operation::snap_to(Id::new(SCROLLABLE_ID), offset)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Custom Viewer for theme-adaptive code block styling
-// ---------------------------------------------------------------------------
-
-/// Custom markdown viewer that overrides code block and image rendering.
-/// Holds references to image/mermaid caches for displaying loaded content.
-struct MdrViewer<'b> {
-    image_cache: &'b HashMap<String, ImageData>,
-    image_pending: &'b HashSet<String>,
-    image_failed: &'b HashSet<String>,
-    mermaid_cache: &'b HashMap<String, Vec<u8>>,
-}
-
-impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer<'b> {
-    fn on_link_click(url: markdown::Uri) -> markdown::Uri {
-        url
-    }
-
-    fn image(
-        &self,
-        settings: markdown::Settings,
-        url: &'a markdown::Uri,
-        _title: &'a str,
-        alt: &markdown::Text,
-    ) -> Element<'a, markdown::Uri, Theme, Renderer> {
-        if let Some(img_data) = self.image_cache.get(url.as_str()) {
-            match img_data {
-                ImageData::Svg(bytes) => {
-                    let handle = svg::Handle::from_memory(bytes.clone());
-                    container(
-                        svg(handle)
-                            .content_fit(ContentFit::ScaleDown)
-                            .width(Length::Shrink)
-                            .height(Length::Shrink),
-                    )
-                    .max_width(MAX_IMAGE_WIDTH)
-                    .center_x(Length::Fill)
-                    .padding(settings.spacing.0)
-                    .into()
-                }
-                ImageData::Raster(bytes) => {
-                    let handle = image_widget::Handle::from_bytes(bytes.clone());
-                    container(
-                        image_widget(handle)
-                            .content_fit(ContentFit::ScaleDown)
-                            .width(Length::Shrink)
-                            .height(Length::Shrink),
-                    )
-                    .max_width(MAX_IMAGE_WIDTH)
-                    .center_x(Length::Fill)
-                    .padding(settings.spacing.0)
-                    .into()
-                }
-            }
-        } else if self.image_failed.contains(url.as_str()) {
-            container(
-                text("⚠ Failed to load image")
-                    .size(13)
-                    .color(Color::from_rgb(0.7, 0.3, 0.3)),
-            )
-            .padding(settings.spacing.0)
-            .into()
-        } else if self.image_pending.contains(url.as_str()) {
-            container(
-                text("⏳ Loading image…")
-                    .size(13)
-                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
-            )
-            .padding(settings.spacing.0)
-            .into()
-        } else {
-            // Fallback: show alt text
-            container(rich_text(alt.spans(settings.style)).on_link_click(Self::on_link_click))
-                .padding(settings.spacing.0)
-                .into()
-        }
-    }
-
-    fn code_block(
-        &self,
-        settings: markdown::Settings,
-        language: Option<&'a str>,
-        code: &'a str,
-        lines: &'a [markdown::Text],
-    ) -> Element<'a, markdown::Uri, Theme, Renderer> {
-        // Mermaid diagram rendering (use cache to avoid re-rendering each frame)
-        if language == Some("mermaid") {
-            if let Some(svg_bytes) = self.mermaid_cache.get(code) {
-                let handle = svg::Handle::from_memory(svg_bytes.clone());
-                return container(
-                    svg(handle)
-                        .content_fit(ContentFit::ScaleDown)
-                        .width(Length::Shrink)
-                        .height(Length::Shrink),
-                )
-                .max_width(MAX_IMAGE_WIDTH)
-                .center_x(Length::Fill)
-                .padding(settings.spacing.0)
-                .style(code_block_container_style)
-                .into();
-            }
-            // Fallback: try to render on-the-fly (first render before cache is populated)
-            if let Ok(svg_str) = mermaid_rs_renderer::render(code) {
-                let handle = svg::Handle::from_memory(svg_str.into_bytes());
-                return container(
-                    svg(handle)
-                        .content_fit(ContentFit::ScaleDown)
-                        .width(Length::Shrink)
-                        .height(Length::Shrink),
-                )
-                .max_width(MAX_IMAGE_WIDTH)
-                .center_x(Length::Fill)
-                .padding(settings.spacing.0)
-                .style(code_block_container_style)
-                .into();
-            }
-        }
-
-        container(
-            scrollable(
-                container(column(lines.iter().map(|line| {
-                    rich_text(line.spans(settings.style))
-                        .on_link_click(Self::on_link_click)
-                        .font(settings.style.code_block_font)
-                        .size(settings.code_size)
-                        .into()
-                })))
-                .padding(settings.code_size),
-            )
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::default()
-                    .width(settings.code_size / 2)
-                    .scroller_width(settings.code_size / 2),
-            )),
-        )
-        .width(Length::Fill)
-        .padding(settings.code_size / 4)
-        .style(code_block_container_style)
-        .into()
-    }
-}
-
-/// Theme-adaptive container style for fenced code blocks.
-///
-/// On light themes uses a warm gray background with high-contrast dark text;
-/// on dark themes uses a slightly elevated surface with light text.
-fn code_block_container_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    if palette.is_dark {
-        // Dark themes: slightly lighter than page background, light text
-        container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.14, 0.15, 0.18))),
-            text_color: Some(Color::from_rgb(0.87, 0.89, 0.93)),
-            border: border::rounded(6),
-            ..container::Style::default()
-        }
-    } else {
-        // Light themes: distinct cool-gray background, dark text for readability
-        container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.95, 0.96, 0.97))),
-            text_color: Some(Color::from_rgb(0.13, 0.14, 0.16)),
-            border: border::rounded(6),
-            ..container::Style::default()
-        }
     }
 }
 
