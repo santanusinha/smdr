@@ -311,7 +311,7 @@ pub(super) fn build_about_panel(app: &MdrApp) -> Element<'_, Message> {
 
     let info = column![
         text(format!("smdr v{version}")).size(13),
-        text("Minimal Desktop Markdown Reader").size(12),
+        text("Simple Markdown Reader").size(12),
         text("").size(6),
         text("Built with iced + pulldown-cmark").size(12),
         text("https://github.com/user/smdr").size(11),

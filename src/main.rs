@@ -1,4 +1,4 @@
-//! smdr — Minimal Desktop Markdown Reader
+//! smdr — Simple Markdown Reader
 
 mod render;
 
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use render::ViewerConfig;
 
-/// A minimal desktop markdown reader.
+/// Simple Markdown Reader.
 #[derive(Parser, Debug)]
 #[command(name = "smdr", version, about)]
 struct Cli {

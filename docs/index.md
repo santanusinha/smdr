@@ -1,6 +1,6 @@
-# mdr
+# smdr
 
-A minimal desktop markdown reader built with Rust.
+Simple Markdown Reader — a fast, native markdown viewer built with Rust.
 
 Renders markdown files in a native window with vim-style navigation, live file watching, and multiple themes.
 
@@ -14,39 +14,39 @@ Renders markdown files in a native window with vim-style navigation, live file w
 ### From source
 
 ```sh
-git clone https://github.com/user/mdr.git
-cd mdr
+git clone https://github.com/user/smdr.git
+cd smdr
 cargo install --path .
 ```
 
 ### Pre-built binaries
 
-See [Releases](https://github.com/user/mdr/releases).
+See [Releases](https://github.com/user/smdr/releases).
 
 ---
 
 ## Usage
 
 ```
-mdr [OPTIONS] [FILE]
+smdr [OPTIONS] [FILE]
 ```
 
 Read from a file:
 
 ```sh
-mdr README.md
+smdr README.md
 ```
 
 Read from stdin:
 
 ```sh
-cat README.md | mdr
+cat README.md | smdr
 ```
 
 Watch for changes (auto-reload):
 
 ```sh
-mdr -w README.md
+smdr -w README.md
 ```
 
 ### Options
@@ -68,8 +68,11 @@ mdr -w README.md
 |-----|--------|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
-| `Ctrl-D` / `PgDn` | Page down |
+| `Ctrl-D` / `PgDn` / `Space` | Page down |
 | `Ctrl-U` / `PgUp` | Page up |
+| `gg` / `Home` | Scroll to top |
+| `GG` / `End` | Scroll to bottom |
+| ` `` ` | Jump to last position |
 | `h` / `←` | Navigate back |
 | `l` / `→` | Navigate forward |
 
@@ -79,31 +82,49 @@ mdr -w README.md
 |-----|--------|
 | `Tab` | Focus next link |
 | `Shift-Tab` | Focus previous link |
-| `Enter` | Activate focused link |
+| `Enter` | Activate focused link (or next search hit) |
 
 ### Search
 
 | Key | Action |
 |-----|--------|
-| `/` or `?` | Open search |
+| `/` | Open search |
 | `Ctrl-F` | Open search |
 | `n` | Next search hit |
 | `p` | Previous search hit |
 | `Esc` | Close search |
 
-### UI
+### Sidebar (table of contents)
 
 | Key | Action |
 |-----|--------|
-| `Ctrl-B` | Toggle sidebar (table of contents) |
+| `Ctrl-B` | Toggle sidebar visibility |
+| `o` | Focus / unfocus sidebar |
+| `j` / `↓` | Next heading (when sidebar focused) |
+| `k` / `↑` | Previous heading (when sidebar focused) |
+| `Enter` | Jump to heading (when sidebar focused) |
+
+### File & clipboard
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-R` | Reload file from disk |
+| `Ctrl-C` | Copy document to clipboard |
+
+### UI & app
+
+| Key | Action |
+|-----|--------|
 | `Ctrl-T` | Cycle theme |
-| `Esc` | Close overlay |
+| `?` | Show keyboard shortcuts |
+| `qq` / `ZZ` | Exit |
+| `Esc` | Close overlay / unfocus sidebar |
 
 ---
 
 ## Themes
 
-mdr ships with 22 built-in themes. Use `--list-themes` to see all options.
+smdr ships with 22 built-in themes. Use `--list-themes` to see all options.
 
 | Theme | Style |
 |-------|-------|

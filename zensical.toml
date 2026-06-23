@@ -1,7 +1,7 @@
 [project]
 site_name = "smdr"
 site_url = "https://github.com/user/smdr"
-site_description = "A minimal desktop markdown reader"
+site_description = "Simple Markdown Reader"
 
 [theme]
 features = ["navigation.instant", "navigation.top"]

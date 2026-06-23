@@ -2,7 +2,7 @@
 name = "smdr"
 version = "0.1.0"
 edition = "2024"
-description = "A minimal desktop markdown reader"
+description = "Simple Markdown Reader"
 license = "MIT"
 
 [dependencies]
