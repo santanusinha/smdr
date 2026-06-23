@@ -1,6 +1,6 @@
 [project]
-site_name = "mdr"
-site_url = "https://github.com/user/mdr"
+site_name = "smdr"
+site_url = "https://github.com/user/smdr"
 site_description = "A minimal desktop markdown reader"
 
 [theme]

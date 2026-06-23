@@ -1,4 +1,4 @@
-//! Core state types, constants, and message definitions for the mdr viewer.
+//! Core state types, constants, and message definitions for the smdr viewer.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -7,8 +7,8 @@ use std::sync::mpsc::Receiver;
 use iced::Size;
 use iced::widget::{markdown, scrollable};
 
-use mdr::markdown::{DocumentLink, TocEntry};
-use mdr::theme::ThemeArg;
+use smdr::markdown::{DocumentLink, TocEntry};
+use smdr::theme::ThemeArg;
 
 /// Configuration passed to [`launch`](super::app::launch).
 #[derive(Debug, Clone, Copy)]
@@ -30,13 +30,13 @@ pub(super) const LINE_SCROLL: f32 = 40.0;
 pub(super) const MAX_IMAGE_WIDTH: f32 = 800.0;
 
 /// Scrollable widget ID for programmatic scrolling.
-pub(super) const SCROLLABLE_ID: &str = "mdr-content-scroll";
+pub(super) const SCROLLABLE_ID: &str = "smdr-content-scroll";
 
 /// Text input widget ID for search bar focus.
-pub(super) const SEARCH_INPUT_ID: &str = "mdr-search-input";
+pub(super) const SEARCH_INPUT_ID: &str = "smdr-search-input";
 
 /// Scrollable widget ID for sidebar programmatic scrolling.
-pub(super) const SIDEBAR_SCROLLABLE_ID: &str = "mdr-sidebar-scroll";
+pub(super) const SIDEBAR_SCROLLABLE_ID: &str = "smdr-sidebar-scroll";
 
 /// Default sidebar ratio (fraction of window width).
 pub(super) const DEFAULT_SIDEBAR_RATIO: f32 = 0.25;

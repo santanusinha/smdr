@@ -11,7 +11,7 @@ use iced::Task;
 use iced::widget::Id;
 use iced::widget::operation::{self, RelativeOffset};
 
-use mdr::markdown as md_helpers;
+use smdr::markdown as md_helpers;
 
 use super::images::load_file;
 use super::state::{MdrApp, Message, NavEntry, SCROLLABLE_ID};

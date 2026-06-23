@@ -1,6 +1,6 @@
 //! Tests for the ThemeArg type — conversion, enumeration, display.
 
-use mdr::theme::ThemeArg;
+use smdr::theme::ThemeArg;
 
 #[test]
 fn theme_arg_to_theme_conversion() {

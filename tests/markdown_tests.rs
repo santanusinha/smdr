@@ -1,6 +1,6 @@
 //! Tests for markdown parsing helpers (slug generation, link/TOC extraction).
 
-use mdr::markdown::{
+use smdr::markdown::{
     extract_atx_heading, extract_links, extract_toc, github_slug, normalize_for_match,
 };
 use std::collections::HashMap;

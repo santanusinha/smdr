@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use iced::Task;
 use iced::widget::markdown;
 
-use mdr::markdown as md_helpers;
+use smdr::markdown as md_helpers;
 
 use super::state::{ImageData, MdrApp, Message};
 
@@ -25,7 +25,7 @@ pub(super) fn load_file(app: &mut MdrApp, path: &Path) -> Task<Message> {
             app.file_path = path.to_path_buf();
             app.base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
             app.title = format!(
-                "mdr — {}",
+                "smdr — {}",
                 path.file_name().unwrap_or_default().to_string_lossy()
             );
             app.search_hits.clear();

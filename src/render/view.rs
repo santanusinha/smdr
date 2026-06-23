@@ -10,7 +10,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Color, Element, Event, Length, Pixels, Subscription};
 
-use mdr::theme::ThemeArg;
+use smdr::theme::ThemeArg;
 
 use super::sidebar::build_sidebar;
 use super::state::{LINE_SCROLL, MdrApp, Message, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID};
@@ -297,7 +297,7 @@ pub(super) fn build_about_panel(app: &MdrApp) -> Element<'_, Message> {
     let version = env!("CARGO_PKG_VERSION");
 
     let header = row![
-        text("About mdr").size(14),
+        text("About smdr").size(14),
         container(
             button(text("✕").size(12))
                 .on_press(Message::CloseOverlay)
@@ -310,11 +310,11 @@ pub(super) fn build_about_panel(app: &MdrApp) -> Element<'_, Message> {
     .width(Length::Fill);
 
     let info = column![
-        text(format!("mdr v{version}")).size(13),
+        text(format!("smdr v{version}")).size(13),
         text("Minimal Desktop Markdown Reader").size(12),
         text("").size(6),
         text("Built with iced + pulldown-cmark").size(12),
-        text("https://github.com/user/mdr").size(11),
+        text("https://github.com/user/smdr").size(11),
     ]
     .spacing(4)
     .padding(8);

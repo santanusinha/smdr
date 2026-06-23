@@ -1,4 +1,4 @@
-//! mdr library crate — exposes core modules for integration testing.
+//! smdr library crate — exposes core modules for integration testing.
 
 pub mod markdown;
 pub mod theme;

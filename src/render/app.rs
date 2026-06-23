@@ -7,9 +7,9 @@ use std::sync::mpsc::Receiver;
 use iced::Task;
 use iced::widget::markdown;
 
-use mdr::markdown::{self as md_helpers};
-use mdr::theme::ThemeArg;
-use mdr::watcher;
+use smdr::markdown::{self as md_helpers};
+use smdr::theme::ThemeArg;
+use smdr::watcher;
 
 use super::images;
 use super::state::{
@@ -41,7 +41,7 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
     };
 
     let title = format!(
-        "mdr — {}",
+        "smdr — {}",
         file_path.file_name().unwrap_or_default().to_string_lossy()
     );
 
@@ -91,7 +91,7 @@ pub fn launch_stdin(
     content: String,
     config: &ViewerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let title = String::from("mdr \u{2014} stdin");
+    let title = String::from("smdr \u{2014} stdin");
     // Use cwd so relative links in the document resolve against the invoking directory.
     let file_path = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))

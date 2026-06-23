@@ -4,7 +4,7 @@ use iced::Task;
 use iced::widget::Id;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 
-use mdr::theme::ThemeArg;
+use smdr::theme::ThemeArg;
 
 use super::images;
 use super::navigation;

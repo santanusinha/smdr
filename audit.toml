@@ -10,7 +10,7 @@
 # for this project.  They are therefore acknowledged and ignored here.
 #
 # Note: these crates are only used to create the native OS window; no
-# VariantStrIter or other affected APIs are called directly by mdr code.
+# VariantStrIter or other affected APIs are called directly by smdr code.
 ignore = [
     # gtk-rs GTK3 bindings — unmaintained (all v0.18.x)
     "RUSTSEC-2024-0411",  # gdkwayland-sys
@@ -27,6 +27,6 @@ ignore = [
     # proc-macro-error v1.0.4 — unmaintained; pulled in by tao's macros
     "RUSTSEC-2024-0370",
 
-    # glib v0.18.5 — unsound VariantStrIter; mdr never touches that iterator
+    # glib v0.18.5 — unsound VariantStrIter; smdr never touches that iterator
     "RUSTSEC-2024-0429",
 ]

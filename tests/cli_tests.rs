@@ -1,6 +1,6 @@
 //! CLI integration tests using `assert_cmd`.
 //!
-//! These tests invoke the compiled `mdr` binary via [`assert_cmd::Command`]
+//! These tests invoke the compiled `smdr` binary via [`assert_cmd::Command`]
 //! and verify exit codes and output messages without launching a real GUI.
 //!
 //! Any test that passes a valid file and wants to verify CLI flag parsing uses
@@ -16,8 +16,8 @@ use tempfile::TempDir;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn mdr() -> Command {
-    Command::cargo_bin("mdr").expect("mdr binary")
+fn smdr() -> Command {
+    Command::cargo_bin("smdr").expect("smdr binary")
 }
 
 /// Creates a temp dir and a minimal markdown file inside it.
@@ -30,11 +30,11 @@ fn temp_md_file(content: &str) -> (TempDir, String) {
     (dir, path_str)
 }
 
-/// Convenience: run mdr with `--dry-run` + extra args + the file path.
+/// Convenience: run smdr with `--dry-run` + extra args + the file path.
 /// `--dry-run` is a hidden flag that exits cleanly after arg/file validation,
 /// before `render::launch` is called, so no window is ever opened.
 fn mdr_dry(extra_args: &[&str], path: &str) -> std::process::Output {
-    mdr()
+    smdr()
         .arg("--dry-run")
         .args(extra_args)
         .arg(path)
@@ -48,30 +48,30 @@ fn mdr_dry(extra_args: &[&str], path: &str) -> std::process::Output {
 
 #[test]
 fn test_help_flag_exits_zero() {
-    mdr().arg("--help").assert().success();
+    smdr().arg("--help").assert().success();
 }
 
 #[test]
 fn test_help_output_contains_usage() {
-    mdr()
+    smdr()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("mdr").or(predicate::str::contains("Usage")));
+        .stdout(predicate::str::contains("smdr").or(predicate::str::contains("Usage")));
 }
 
 #[test]
 fn test_version_flag_exits_zero() {
-    mdr().arg("--version").assert().success();
+    smdr().arg("--version").assert().success();
 }
 
 #[test]
 fn test_version_output_contains_version_number() {
-    mdr()
+    smdr()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.1.0").or(predicate::str::contains("mdr")));
+        .stdout(predicate::str::contains("0.1.0").or(predicate::str::contains("smdr")));
 }
 
 // ---------------------------------------------------------------------------
@@ -80,12 +80,12 @@ fn test_version_output_contains_version_number() {
 
 #[test]
 fn test_no_args_exits_nonzero() {
-    mdr().assert().failure();
+    smdr().assert().failure();
 }
 
 #[test]
 fn test_no_args_prints_error_or_usage() {
-    mdr()
+    smdr()
         .assert()
         .failure()
         .stderr(predicate::str::is_empty().not());
@@ -93,7 +93,7 @@ fn test_no_args_prints_error_or_usage() {
 
 #[test]
 fn test_unknown_flag_exits_nonzero() {
-    mdr().arg("--frobulate").assert().failure();
+    smdr().arg("--frobulate").assert().failure();
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ fn test_unknown_flag_exits_nonzero() {
 
 #[test]
 fn test_nonexistent_file_exits_nonzero() {
-    mdr()
+    smdr()
         .arg("/tmp/mdr_test_definitely_does_not_exist_xyzzy.md")
         .assert()
         .failure();
@@ -110,7 +110,7 @@ fn test_nonexistent_file_exits_nonzero() {
 
 #[test]
 fn test_nonexistent_file_prints_error_to_stderr() {
-    mdr()
+    smdr()
         .arg("/tmp/mdr_test_definitely_does_not_exist_xyzzy.md")
         .assert()
         .failure()
@@ -124,7 +124,7 @@ fn test_nonexistent_file_prints_error_to_stderr() {
 #[test]
 fn test_directory_as_file_exits_nonzero() {
     let dir = TempDir::new().expect("tempdir");
-    mdr()
+    smdr()
         .arg(dir.path().to_str().expect("path"))
         .assert()
         .failure();
@@ -133,7 +133,7 @@ fn test_directory_as_file_exits_nonzero() {
 #[test]
 fn test_directory_as_file_prints_error_to_stderr() {
     let dir = TempDir::new().expect("tempdir");
-    mdr()
+    smdr()
         .arg(dir.path().to_str().expect("path"))
         .assert()
         .failure()
@@ -147,7 +147,7 @@ fn test_directory_as_file_prints_error_to_stderr() {
 #[test]
 fn test_invalid_theme_exits_nonzero() {
     let (_dir, path) = temp_md_file("# hi");
-    mdr()
+    smdr()
         .args(["--dry-run", "--theme", "rainbow", &path])
         .assert()
         .failure();
@@ -156,7 +156,7 @@ fn test_invalid_theme_exits_nonzero() {
 #[test]
 fn test_invalid_theme_prints_error() {
     let (_dir, path) = temp_md_file("# hi");
-    mdr()
+    smdr()
         .args(["--dry-run", "--theme", "rainbow", &path])
         .assert()
         .failure()
@@ -173,7 +173,7 @@ fn test_txt_file_does_not_cause_clap_error() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join("notes.txt");
     fs::write(&path, "hello").expect("write");
-    let output = mdr()
+    let output = smdr()
         .args(["--dry-run", path.to_str().expect("path")])
         .output()
         .expect("run");
@@ -305,13 +305,13 @@ fn test_all_flags_together_accepted_by_clap() {
 #[test]
 fn test_dry_run_exits_zero() {
     let (_dir, path) = temp_md_file("# hi");
-    mdr().args(["--dry-run", &path]).assert().success();
+    smdr().args(["--dry-run", &path]).assert().success();
 }
 
 #[test]
 fn test_dry_run_produces_no_output() {
     let (_dir, path) = temp_md_file("# hi");
-    mdr()
+    smdr()
         .args(["--dry-run", &path])
         .assert()
         .success()
@@ -325,12 +325,12 @@ fn test_dry_run_produces_no_output() {
 
 #[test]
 fn test_list_themes_exits_zero() {
-    mdr().arg("--list-themes").assert().success();
+    smdr().arg("--list-themes").assert().success();
 }
 
 #[test]
 fn test_list_themes_output_contains_known_themes() {
-    mdr().arg("--list-themes").assert().success().stdout(
+    smdr().arg("--list-themes").assert().success().stdout(
         predicate::str::contains("system")
             .and(predicate::str::contains("dark"))
             .and(predicate::str::contains("light"))

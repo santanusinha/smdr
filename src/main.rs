@@ -1,9 +1,9 @@
-//! mdr — Minimal Desktop Markdown Reader
+//! smdr — Minimal Desktop Markdown Reader
 
 mod render;
 
 use clap::Parser;
-use mdr::theme::ThemeArg;
+use smdr::theme::ThemeArg;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -11,7 +11,7 @@ use render::ViewerConfig;
 
 /// A minimal desktop markdown reader.
 #[derive(Parser, Debug)]
-#[command(name = "mdr", version, about)]
+#[command(name = "smdr", version, about)]
 struct Cli {
     /// Path to the markdown file to view. Optional when reading from stdin pipe.
     #[arg(value_name = "FILE")]
@@ -111,7 +111,7 @@ fn main() {
         }
         None => {
             eprintln!("Error: no FILE argument and stdin is not a pipe");
-            eprintln!("Usage: mdr <FILE> or pipe markdown to mdr");
+            eprintln!("Usage: smdr <FILE> or pipe markdown to smdr");
             std::process::exit(1);
         }
     }

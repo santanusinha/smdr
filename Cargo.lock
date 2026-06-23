@@ -2487,22 +2487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdr"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "iced",
- "mermaid-rs-renderer",
- "notify",
- "open",
- "predicates",
- "pulldown-cmark",
- "reqwest",
- "tempfile",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4265,6 +4249,22 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "smdr"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "iced",
+ "mermaid-rs-renderer",
+ "notify",
+ "open",
+ "predicates",
+ "pulldown-cmark",
+ "reqwest",
+ "tempfile",
+]
 
 [[package]]
 name = "smithay-client-toolkit"
