@@ -238,6 +238,8 @@ pub(super) fn build_shortcuts_panel(app: &MdrApp) -> Element<'_, Message> {
         ("Toggle sidebar", "Ctrl-B", ""),
         ("Focus outline sidebar", "", "o"),
         ("Cycle theme", "Ctrl-T", ""),
+        ("Reload file", "Ctrl-R", ""),
+        ("Copy document", "Ctrl-C", ""),
         ("Show keymap", "", "?"),
         ("Exit", "", "qq / ZZ"),
         ("Close search / overlay", "Esc", ""),
@@ -435,6 +437,8 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                             "f" => Some(Message::SearchOpen),
                             "b" => Some(Message::SidebarToggleVisibility),
                             "t" => Some(Message::CycleTheme),
+                            "r" => Some(Message::ReloadFile),
+                            "c" => Some(Message::CopyToClipboard),
                             _ => None,
                         }
                     } else if modifiers.alt() {

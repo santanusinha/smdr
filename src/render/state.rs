@@ -128,6 +128,10 @@ pub(super) enum Message {
     ScrollToTop,
     ScrollToBottom,
     JumpToLastPosition,
+    /// Reload the current file from disk (Ctrl-R).
+    ReloadFile,
+    /// Copy the current document's raw markdown to the clipboard (Ctrl-C).
+    CopyToClipboard,
     ExitApp,
     PendingKey(char),
 }

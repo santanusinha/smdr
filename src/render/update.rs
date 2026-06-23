@@ -165,6 +165,11 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             operation::snap_to(Id::new(SCROLLABLE_ID), RelativeOffset { x: 0.0, y: target })
         }
         Message::ExitApp => iced::exit(),
+        Message::ReloadFile => {
+            let path = app.file_path.clone();
+            images::load_file(app, &path)
+        }
+        Message::CopyToClipboard => iced::clipboard::write(app.raw_markdown.clone()),
         Message::PendingKey(ch) => {
             if app.pending_key == Some(ch) {
                 app.pending_key = None;
