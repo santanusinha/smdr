@@ -1,15 +1,16 @@
 # smdr
 
-Simple Markdown Reader — a fast, native markdown viewer built with Rust.
+**Simple Markdown Reader** — a fast, native markdown viewer built with Rust and [iced](https://github.com/iced-rs/iced).
 
-Renders markdown files in a native window with vim-style navigation, live file watching, and multiple themes.
-
-![Screenshot placeholder](assets/screenshot.png)
-<!-- TODO: Replace with actual screenshot -->
-
----
+Renders markdown files in a native window with vim-style navigation, live file watching, and 22 built-in themes.
 
 ## Install
+
+### From crates.io
+
+```sh
+cargo install smdr
+```
 
 ### From source
 
@@ -18,12 +19,6 @@ git clone https://github.com/santanusinha/smdr.git
 cd smdr
 cargo install --path .
 ```
-
-### Pre-built binaries
-
-See [Releases](https://github.com/santanusinha/smdr/releases).
-
----
 
 ## Usage
 
@@ -58,8 +53,6 @@ smdr -w README.md
 | `--no-network` | Disable network image fetching |
 | `--list-themes` | List available themes and exit |
 
----
-
 ## Keymap
 
 ### Navigation
@@ -72,7 +65,7 @@ smdr -w README.md
 | `Ctrl-U` / `PgUp` | Page up |
 | `gg` / `Home` | Scroll to top |
 | `GG` / `End` | Scroll to bottom |
-| ` `` ` | Jump to last position |
+| `` ` `` | Jump to last position |
 | `h` / `←` | Navigate back |
 | `l` / `→` | Navigate forward |
 
@@ -120,8 +113,6 @@ smdr -w README.md
 | `qq` / `ZZ` | Exit |
 | `Esc` | Close overlay / unfocus sidebar |
 
----
-
 ## Themes
 
 smdr ships with 22 built-in themes. Use `--list-themes` to see all options.
@@ -151,11 +142,6 @@ smdr ships with 22 built-in themes. Use `--list-themes` to see all options.
 | `nightfly` | Blue dark |
 | `oxocarbon` | IBM Carbon dark |
 | `ferra` | Warm muted dark |
-
-![Themes placeholder](assets/themes.png)
-<!-- TODO: Replace with actual screenshot showing theme variety -->
-
----
 
 ## License
 

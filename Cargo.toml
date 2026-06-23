@@ -2,8 +2,14 @@
 name = "smdr"
 version = "0.1.0"
 edition = "2024"
-description = "Simple Markdown Reader"
+description = "Simple Markdown Reader — a fast, native markdown viewer with vim-style navigation, live reload, and 22 themes"
 license = "MIT"
+repository = "https://github.com/santanusinha/smdr"
+homepage = "https://github.com/santanusinha/smdr"
+documentation = "https://docs.rs/smdr"
+readme = "README.md"
+keywords = ["markdown", "viewer", "iced", "reader", "terminal"]
+categories = ["command-line-utilities", "gui", "visualization"]
 
 [dependencies]
 clap           = { version = "4", features = ["derive"] }
