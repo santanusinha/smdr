@@ -91,10 +91,9 @@ pub(super) fn spawn_image_loads(app: &mut MdrApp) -> Task<Message> {
 }
 
 /// Maximum pixmap dimension (per side) to prevent memory blowup.
-const MAX_PIXMAP_DIM: u32 = 4096;
-
-/// Collect all mermaid code blocks from the markdown and spawn async
-/// rasterization tasks for those not yet cached.
+/// render tasks for those not yet cached.
+///
+/// Rendering runs on a blocking thread to avoid freezing the UI.
 ///
 /// Rasterization runs on a blocking thread to avoid freezing the UI.
 pub(super) fn spawn_mermaid_loads(app: &mut MdrApp) -> Option<Task<Message>> {
@@ -135,7 +134,7 @@ pub(super) fn spawn_mermaid_loads(app: &mut MdrApp) -> Option<Task<Message>> {
         let code_clone = code.clone();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || rasterize_mermaid(&code))
+                tokio::task::spawn_blocking(move || render_mermaid(&code))
                     .await
                     .map_err(|_| ())
                     .and_then(|inner| inner)
@@ -147,53 +146,10 @@ pub(super) fn spawn_mermaid_loads(app: &mut MdrApp) -> Option<Task<Message>> {
     Some(task)
 }
 
-/// Render a mermaid diagram source to PNG bytes.
-///
-/// 1. Generate SVG via `mermaid_rs_renderer::render`.
-/// 2. Parse the SVG with `usvg`.
-/// 3. Rasterize to a `tiny_skia::Pixmap` at 2× scale (capped).
-/// 4. Encode as PNG.
-///
-/// # Safety bounds
-/// Pixmap dimensions are capped at [`MAX_PIXMAP_DIM`]×[`MAX_PIXMAP_DIM`] to
-/// prevent memory exhaustion on very large diagrams.
-fn rasterize_mermaid(code: &str) -> Result<Vec<u8>, ()> {
+/// Render a mermaid diagram source to SVG bytes.
+fn render_mermaid(code: &str) -> Result<Vec<u8>, ()> {
     let svg_str = mermaid_rs_renderer::render(code).map_err(|_| ())?;
-
-    let mut fontdb = usvg::fontdb::Database::new();
-    fontdb.load_system_fonts();
-    let options = usvg::Options {
-        fontdb: std::sync::Arc::new(fontdb),
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_data(svg_str.as_bytes(), &options).map_err(|_| ())?;
-
-    let tree_size = tree.size();
-    let scale = 2.0_f32;
-    let mut px_w = (tree_size.width() * scale).ceil() as u32;
-    let mut px_h = (tree_size.height() * scale).ceil() as u32;
-
-    // Cap dimensions to prevent memory blowup; adjust scale if needed.
-    let actual_scale = if px_w > MAX_PIXMAP_DIM || px_h > MAX_PIXMAP_DIM {
-        let max_dim = px_w.max(px_h) as f32;
-        let adjusted = (MAX_PIXMAP_DIM as f32 / max_dim) * scale;
-        px_w = (tree_size.width() * adjusted).ceil() as u32;
-        px_h = (tree_size.height() * adjusted).ceil() as u32;
-        adjusted
-    } else {
-        scale
-    };
-
-    // Guard against zero-size pixmaps.
-    if px_w == 0 || px_h == 0 {
-        return Err(());
-    }
-
-    let mut pixmap = tiny_skia::Pixmap::new(px_w, px_h).ok_or(())?;
-    let transform = tiny_skia::Transform::from_scale(actual_scale, actual_scale);
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
-
-    pixmap.encode_png().map_err(|_| ())
+    Ok(svg_str.into_bytes())
 }
 
 // ---------------------------------------------------------------------------

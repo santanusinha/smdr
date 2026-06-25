@@ -189,7 +189,7 @@ impl AppInit {
             viewport_height: 0.0,
         };
 
-        // Mermaid diagrams are rasterized asynchronously by spawn_image_loads.
+        // Mermaid diagrams are rendered asynchronously by spawn_image_loads.
 
         // Mark image URLs as pending and spawn loading tasks
         let task = images::spawn_image_loads(&mut app);

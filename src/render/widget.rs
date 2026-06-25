@@ -14,7 +14,8 @@ pub(super) struct MdrViewer<'b> {
     pub(super) image_cache: &'b HashMap<String, ImageData>,
     pub(super) image_pending: &'b HashSet<String>,
     pub(super) image_failed: &'b HashSet<String>,
-    pub(super) mermaid_cache: &'b HashMap<String, image_widget::Handle>,
+    pub(super) mermaid_cache: &'b HashMap<String, svg::Handle>,
+    pub(super) mermaid_pending: &'b HashSet<String>,
 }
 
 impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer<'b> {
@@ -84,20 +85,29 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
         lines: &'a [markdown::Text],
     ) -> Element<'a, markdown::Uri, Theme, Renderer> {
         // Mermaid diagram rendering (use cached handle to avoid re-decoding every frame)
-        if language == Some("mermaid")
-            && let Some(handle) = self.mermaid_cache.get(code)
-        {
-            return container(
-                image_widget(handle.clone())
-                    .content_fit(ContentFit::ScaleDown)
-                    .width(Length::Shrink)
-                    .height(Length::Shrink),
-            )
-            .max_width(MAX_IMAGE_WIDTH)
-            .center_x(Length::Fill)
-            .padding(settings.spacing.0)
-            .style(code_block_container_style)
-            .into();
+        if language == Some("mermaid") {
+            if let Some(handle) = self.mermaid_cache.get(code) {
+                return container(
+                    svg(handle.clone())
+                        .content_fit(ContentFit::ScaleDown)
+                        .width(Length::Fill)
+                        .height(Length::Shrink),
+                )
+                .max_width(MAX_IMAGE_WIDTH)
+                .center_x(Length::Fill)
+                .padding(settings.spacing.0)
+                .style(code_block_container_style)
+                .into();
+            } else if self.mermaid_pending.contains(code) {
+                return container(
+                    text("⏳ Rendering diagram…")
+                        .size(13)
+                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                )
+                .padding(settings.spacing.0)
+                .style(code_block_container_style)
+                .into();
+            }
         }
 
         container(

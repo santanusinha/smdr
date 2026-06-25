@@ -132,7 +132,7 @@ pub(super) enum Message {
     Scrolled(scrollable::Viewport),
     WindowResized(Size),
     ImageLoaded(String, Option<ImageData>),
-    /// Mermaid diagram rasterized to PNG: (source_code, png_bytes).
+    /// Mermaid diagram rendered to SVG: (source_code, svg_bytes).
     MermaidRendered(String, Option<Vec<u8>>),
     ScrollToTop,
     ScrollToBottom,
@@ -192,11 +192,8 @@ pub(super) struct MdrApp {
     /// URLs that failed to load.
     pub(super) image_failed: HashSet<String>,
     /// Cached mermaid diagram handles keyed by source code.
-    ///
-    /// Stores `image::Handle` (not raw PNG bytes) so the handle `Id` is stable
-    /// across frames and iced's raster cache can decode once, not every frame.
-    pub(super) mermaid_cache: HashMap<String, image_widget::Handle>,
-    /// Mermaid source codes currently being rasterized.
+    pub(super) mermaid_cache: HashMap<String, svg::Handle>,
+    /// Mermaid source codes currently being rendered.
     pub(super) mermaid_pending: HashSet<String>,
     /// Whether network fetching is enabled.
     pub(super) network_enabled: bool,

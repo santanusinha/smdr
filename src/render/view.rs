@@ -54,6 +54,7 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
         image_pending: &app.image_pending,
         image_failed: &app.image_failed,
         mermaid_cache: &app.mermaid_cache,
+        mermaid_pending: &app.mermaid_pending,
     };
     let md_view: Element<Message> =
         markdown::view_with(app.content.items(), settings, &viewer).map(Message::LinkClicked);
