@@ -114,6 +114,7 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
         Overlay::None => None,
         Overlay::Shortcuts => Some(build_shortcuts_panel(app)),
         Overlay::About => Some(build_about_panel(app)),
+        Overlay::MermaidModal(handle, zoom) => Some(build_mermaid_modal(app, handle.clone(), *zoom)),
     };
 
     // --- Sidebar + content area ---
@@ -145,8 +146,14 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
     }
 
     if let Some(panel) = overlay_panel {
-        layout = layout.push(main_body);
-        layout = layout.push(panel);
+        if matches!(app.overlay, Overlay::MermaidModal(_, _)) {
+            // Full-screen overlay for Mermaid diagram
+            layout = layout.push(panel);
+        } else {
+            // Other panels just get stacked below main content (like a bottom sheet)
+            layout = layout.push(main_body);
+            layout = layout.push(panel);
+        }
     } else {
         layout = layout.push(main_body);
     }
@@ -324,6 +331,62 @@ pub(super) fn build_about_panel(app: &MdrApp) -> Element<'_, Message> {
         .width(Length::Fill)
         .max_width(400)
         .center_x(Length::Fill)
+        .style(container::rounded_box)
+        .into()
+}
+
+/// Build the mermaid overlay panel.
+pub(super) fn build_mermaid_modal(
+    app: &MdrApp,
+    handle: iced::widget::svg::Handle,
+    zoom: f32,
+) -> Element<'_, Message> {
+    let _ = app;
+
+    let header = row![
+        text(format!("Mermaid Diagram (Zoom: {:.1}x)", zoom)).size(14),
+        container(
+            row![
+                button(text("−").size(14)).on_press(Message::MermaidZoomOut).padding([2, 6]),
+                button(text("+").size(14)).on_press(Message::MermaidZoomIn).padding([2, 6]),
+                button(text("✕").size(12)).on_press(Message::CloseOverlay).padding([2, 6])
+            ].spacing(8)
+        )
+        .width(Length::Fill)
+        .align_x(Alignment::End),
+    ]
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
+
+    // For zooming SVG: iced's SVG widget doesn't support a direct zoom scale factor yet natively, 
+    // but we can manipulate its absolute width and height while wrapping it in a scrollable,
+    // or we can use an image scale transform. 
+    // Here we will use a scalable container inside a scrollable pane.
+    let base_size = 1000.0;
+    let scaled_size = base_size * zoom;
+    let svg_view = scrollable(
+        container(
+            iced::widget::svg(handle)
+                .width(Length::Fixed(scaled_size))
+                .height(Length::Fixed(scaled_size))
+                // ContentFit::Contain inside a Fixed container will scale up the SVG
+                .content_fit(iced::ContentFit::Contain)
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+    )
+    .direction(iced::widget::scrollable::Direction::Both {
+        vertical: iced::widget::scrollable::Scrollbar::new(),
+        horizontal: iced::widget::scrollable::Scrollbar::new(),
+    })
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    container(column![header, svg_view].spacing(16).padding(16))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .style(container::rounded_box)
         .into()
 }
