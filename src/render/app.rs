@@ -180,6 +180,7 @@ impl AppInit {
             image_pending: HashSet::new(),
             image_failed: HashSet::new(),
             mermaid_cache: HashMap::new(),
+            mermaid_pending: HashSet::new(),
             network_enabled,
             base_dir: base_dir.clone(),
             pending_key: None,
@@ -188,8 +189,7 @@ impl AppInit {
             viewport_height: 0.0,
         };
 
-        // Pre-render mermaid diagrams
-        images::prerender_mermaid(&mut app);
+        // Mermaid diagrams are rasterized asynchronously by spawn_image_loads.
 
         // Mark image URLs as pending and spawn loading tasks
         let task = images::spawn_image_loads(&mut app);

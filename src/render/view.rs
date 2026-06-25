@@ -333,6 +333,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     let has_overlay = app.overlay != Overlay::None;
 
     let sidebar_focused = app.sidebar_focused;
+    let sidebar_dragging = app.sidebar_dragging;
 
     let keys = keyboard::listen()
         .with((search_mode, has_overlay, sidebar_focused))
@@ -464,17 +465,34 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                 _ => None,
             }
         });
-
-    // Global mouse event subscription for sidebar drag tracking
-    let mouse_events = event::listen_with(|event, _status, _window| match event {
-        Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            Some(Message::SidebarDragMove(position.x))
-        }
-        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-            Some(Message::SidebarDragEnd)
-        }
-        _ => None,
-    });
+    // Mouse events for sidebar drag tracking.
+    //
+    // CRITICAL: We gate on `sidebar_dragging` so that cursor-move events only
+    // produce messages while an active drag is in progress.  Without this gate,
+    // every mouse movement would emit a `SidebarDragMove` message, causing iced
+    // to rebuild the view on each mouse-motion event — an infinite re-render
+    // loop that pins the CPU at 100%.
+    //
+    // We use `event::listen()` (returns `Subscription<Event>`) chained with
+    // `.with(sidebar_dragging)` and `.filter_map()` because `listen_with`
+    // requires a plain `fn` pointer that cannot capture state.
+    let mouse_events =
+        event::listen()
+            .with(sidebar_dragging)
+            .filter_map(|(sidebar_dragging, event)| {
+                if !sidebar_dragging {
+                    return None;
+                }
+                match event {
+                    Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                        Some(Message::SidebarDragMove(position.x))
+                    }
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        Some(Message::SidebarDragEnd)
+                    }
+                    _ => None,
+                }
+            });
 
     let ticker = iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick);
 

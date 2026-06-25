@@ -14,7 +14,7 @@ pub(super) struct MdrViewer<'b> {
     pub(super) image_cache: &'b HashMap<String, ImageData>,
     pub(super) image_pending: &'b HashSet<String>,
     pub(super) image_failed: &'b HashSet<String>,
-    pub(super) mermaid_cache: &'b HashMap<String, Vec<u8>>,
+    pub(super) mermaid_cache: &'b HashMap<String, image_widget::Handle>,
 }
 
 impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer<'b> {
@@ -31,32 +31,26 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
     ) -> Element<'a, markdown::Uri, Theme, Renderer> {
         if let Some(img_data) = self.image_cache.get(url.as_str()) {
             match img_data {
-                ImageData::Svg(bytes) => {
-                    let handle = svg::Handle::from_memory(bytes.clone());
-                    container(
-                        svg(handle)
-                            .content_fit(ContentFit::ScaleDown)
-                            .width(Length::Shrink)
-                            .height(Length::Shrink),
-                    )
-                    .max_width(MAX_IMAGE_WIDTH)
-                    .center_x(Length::Fill)
-                    .padding(settings.spacing.0)
-                    .into()
-                }
-                ImageData::Raster(bytes) => {
-                    let handle = image_widget::Handle::from_bytes(bytes.clone());
-                    container(
-                        image_widget(handle)
-                            .content_fit(ContentFit::ScaleDown)
-                            .width(Length::Shrink)
-                            .height(Length::Shrink),
-                    )
-                    .max_width(MAX_IMAGE_WIDTH)
-                    .center_x(Length::Fill)
-                    .padding(settings.spacing.0)
-                    .into()
-                }
+                ImageData::Svg(handle) => container(
+                    svg(handle.clone())
+                        .content_fit(ContentFit::Contain)
+                        .width(Length::Fill)
+                        .height(Length::Shrink),
+                )
+                .max_width(MAX_IMAGE_WIDTH)
+                .center_x(Length::Fill)
+                .padding(settings.spacing.0)
+                .into(),
+                ImageData::Raster(handle) => container(
+                    image_widget(handle.clone())
+                        .content_fit(ContentFit::ScaleDown)
+                        .width(Length::Shrink)
+                        .height(Length::Shrink),
+                )
+                .max_width(MAX_IMAGE_WIDTH)
+                .center_x(Length::Fill)
+                .padding(settings.spacing.0)
+                .into(),
             }
         } else if self.image_failed.contains(url.as_str()) {
             container(
@@ -89,37 +83,21 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
         code: &'a str,
         lines: &'a [markdown::Text],
     ) -> Element<'a, markdown::Uri, Theme, Renderer> {
-        // Mermaid diagram rendering (use cache to avoid re-rendering each frame)
-        if language == Some("mermaid") {
-            if let Some(svg_bytes) = self.mermaid_cache.get(code) {
-                let handle = svg::Handle::from_memory(svg_bytes.clone());
-                return container(
-                    svg(handle)
-                        .content_fit(ContentFit::ScaleDown)
-                        .width(Length::Shrink)
-                        .height(Length::Shrink),
-                )
-                .max_width(MAX_IMAGE_WIDTH)
-                .center_x(Length::Fill)
-                .padding(settings.spacing.0)
-                .style(code_block_container_style)
-                .into();
-            }
-            // Fallback: try to render on-the-fly (first render before cache is populated)
-            if let Ok(svg_str) = mermaid_rs_renderer::render(code) {
-                let handle = svg::Handle::from_memory(svg_str.into_bytes());
-                return container(
-                    svg(handle)
-                        .content_fit(ContentFit::ScaleDown)
-                        .width(Length::Shrink)
-                        .height(Length::Shrink),
-                )
-                .max_width(MAX_IMAGE_WIDTH)
-                .center_x(Length::Fill)
-                .padding(settings.spacing.0)
-                .style(code_block_container_style)
-                .into();
-            }
+        // Mermaid diagram rendering (use cached handle to avoid re-decoding every frame)
+        if language == Some("mermaid")
+            && let Some(handle) = self.mermaid_cache.get(code)
+        {
+            return container(
+                image_widget(handle.clone())
+                    .content_fit(ContentFit::ScaleDown)
+                    .width(Length::Shrink)
+                    .height(Length::Shrink),
+            )
+            .max_width(MAX_IMAGE_WIDTH)
+            .center_x(Length::Fill)
+            .padding(settings.spacing.0)
+            .style(code_block_container_style)
+            .into();
         }
 
         container(

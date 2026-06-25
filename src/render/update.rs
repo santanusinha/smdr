@@ -2,6 +2,7 @@
 
 use iced::Task;
 use iced::widget::Id;
+use iced::widget::image as image_widget;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 
 use smdr::theme::ThemeArg;
@@ -145,6 +146,14 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                 None => {
                     app.image_failed.insert(url);
                 }
+            }
+            Task::none()
+        }
+        Message::MermaidRendered(code, png) => {
+            app.mermaid_pending.remove(&code);
+            if let Some(png) = png {
+                app.mermaid_cache
+                    .insert(code, image_widget::Handle::from_bytes(png));
             }
             Task::none()
         }

@@ -4263,7 +4263,11 @@ dependencies = [
  "predicates",
  "pulldown-cmark",
  "reqwest",
+ "resvg",
  "tempfile",
+ "tiny-skia",
+ "tokio",
+ "usvg",
 ]
 
 [[package]]

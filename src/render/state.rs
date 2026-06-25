@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use iced::Size;
-use iced::widget::{markdown, scrollable};
+use iced::widget::{image as image_widget, markdown, scrollable, svg};
 
 use smdr::markdown::{DocumentLink, TocEntry};
 use smdr::theme::ThemeArg;
@@ -54,11 +54,18 @@ pub(super) const INITIAL_WINDOW_WIDTH: f32 = 960.0;
 // Image cache types
 // ---------------------------------------------------------------------------
 
-/// Cached image data for display in the viewer.
+/// Cached image handle for display in the viewer.
+///
+/// Storing the iced `Handle` (rather than raw bytes) ensures the handle's
+/// internal `Id` is generated **once** and reused across frames.  Both
+/// `image::Handle::from_bytes` and `svg::Handle::from_memory` create a new
+/// identifier on every call; if called inside `build_ui` every frame, iced's
+/// image-raster cache never hits and re-decodes the image continuously —
+/// pinning the CPU at 100% per image.
 #[derive(Debug, Clone)]
 pub(super) enum ImageData {
-    Svg(Vec<u8>),
-    Raster(Vec<u8>),
+    Svg(svg::Handle),
+    Raster(image_widget::Handle),
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +132,8 @@ pub(super) enum Message {
     Scrolled(scrollable::Viewport),
     WindowResized(Size),
     ImageLoaded(String, Option<ImageData>),
+    /// Mermaid diagram rasterized to PNG: (source_code, png_bytes).
+    MermaidRendered(String, Option<Vec<u8>>),
     ScrollToTop,
     ScrollToBottom,
     JumpToLastPosition,
@@ -182,8 +191,13 @@ pub(super) struct MdrApp {
     pub(super) image_pending: HashSet<String>,
     /// URLs that failed to load.
     pub(super) image_failed: HashSet<String>,
-    /// Cached mermaid diagram SVGs keyed by source code.
-    pub(super) mermaid_cache: HashMap<String, Vec<u8>>,
+    /// Cached mermaid diagram handles keyed by source code.
+    ///
+    /// Stores `image::Handle` (not raw PNG bytes) so the handle `Id` is stable
+    /// across frames and iced's raster cache can decode once, not every frame.
+    pub(super) mermaid_cache: HashMap<String, image_widget::Handle>,
+    /// Mermaid source codes currently being rasterized.
+    pub(super) mermaid_pending: HashSet<String>,
     /// Whether network fetching is enabled.
     pub(super) network_enabled: bool,
     /// Base directory for resolving relative image paths.
