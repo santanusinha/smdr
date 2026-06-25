@@ -87,7 +87,7 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
         // Mermaid diagram rendering (use cached handle to avoid re-decoding every frame)
         if language == Some("mermaid") {
             if let Some(handle) = self.mermaid_cache.get(code) {
-                return container(
+                let svg_content = container(
                     svg(handle.clone())
                         .content_fit(ContentFit::ScaleDown)
                         .width(Length::Fill)
@@ -96,8 +96,17 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
                 .max_width(MAX_IMAGE_WIDTH)
                 .center_x(Length::Fill)
                 .padding(settings.spacing.0)
-                .style(code_block_container_style)
-                .into();
+                .style(code_block_container_style);
+
+                let btn = iced::widget::button(svg_content)
+                    .on_press(markdown::Uri::from(format!(
+                        "smdr-mermaid:{}",
+                        urlencoding::encode(code)
+                    )))
+                    .padding(0)
+                    .style(iced::widget::button::text);
+
+                return iced::widget::container(btn).into();
             } else if self.mermaid_pending.contains(code) {
                 return container(
                     text("⏳ Rendering diagram…")

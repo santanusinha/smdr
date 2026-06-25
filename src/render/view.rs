@@ -114,7 +114,9 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
         Overlay::None => None,
         Overlay::Shortcuts => Some(build_shortcuts_panel(app)),
         Overlay::About => Some(build_about_panel(app)),
-        Overlay::MermaidModal(handle, zoom) => Some(build_mermaid_modal(app, handle.clone(), *zoom)),
+        Overlay::MermaidModal(handle, zoom) => {
+            Some(build_mermaid_modal(app, handle.clone(), *zoom))
+        }
     };
 
     // --- Sidebar + content area ---
@@ -347,10 +349,17 @@ pub(super) fn build_mermaid_modal(
         text(format!("Mermaid Diagram (Zoom: {:.1}x)", zoom)).size(14),
         container(
             row![
-                button(text("−").size(14)).on_press(Message::MermaidZoomOut).padding([2, 6]),
-                button(text("+").size(14)).on_press(Message::MermaidZoomIn).padding([2, 6]),
-                button(text("✕").size(12)).on_press(Message::CloseOverlay).padding([2, 6])
-            ].spacing(8)
+                button(text("−").size(14))
+                    .on_press(Message::MermaidZoomOut)
+                    .padding([2, 6]),
+                button(text("+").size(14))
+                    .on_press(Message::MermaidZoomIn)
+                    .padding([2, 6]),
+                button(text("✕").size(12))
+                    .on_press(Message::CloseOverlay)
+                    .padding([2, 6])
+            ]
+            .spacing(8)
         )
         .width(Length::Fill)
         .align_x(Alignment::End),
@@ -358,9 +367,9 @@ pub(super) fn build_mermaid_modal(
     .align_y(Alignment::Center)
     .width(Length::Fill);
 
-    // For zooming SVG: iced's SVG widget doesn't support a direct zoom scale factor yet natively, 
+    // For zooming SVG: iced's SVG widget doesn't support a direct zoom scale factor yet natively,
     // but we can manipulate its absolute width and height while wrapping it in a scrollable,
-    // or we can use an image scale transform. 
+    // or we can use an image scale transform.
     // Here we will use a scalable container inside a scrollable pane.
     let base_size = 1000.0;
     let scaled_size = base_size * zoom;
@@ -370,13 +379,14 @@ pub(super) fn build_mermaid_modal(
                 .width(Length::Fixed(scaled_size))
                 .height(Length::Fixed(scaled_size))
                 // ContentFit::Contain inside a Fixed container will scale up the SVG
-                .content_fit(iced::ContentFit::Contain)
+                .content_fit(iced::ContentFit::Contain),
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Top),
     )
+    .id(Id::new(super::state::MERMAID_SCROLLABLE_ID))
     .direction(iced::widget::scrollable::Direction::Both {
         vertical: iced::widget::scrollable::Scrollbar::new(),
         horizontal: iced::widget::scrollable::Scrollbar::new(),
@@ -399,136 +409,183 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     let sidebar_focused = app.sidebar_focused;
     let sidebar_dragging = app.sidebar_dragging;
 
+    let is_mermaid_modal = matches!(app.overlay, Overlay::MermaidModal(_, _));
+
     let keys = keyboard::listen()
-        .with((search_mode, has_overlay, sidebar_focused))
-        .filter_map(|((search_mode, has_overlay, sidebar_focused), event)| {
-            let keyboard::Event::KeyPressed {
-                key,
-                modifiers,
-                text: _,
-                modified_key,
-                physical_key: _,
-                location: _,
-                repeat: _,
-            } = event
-            else {
-                return None;
-            };
+        .with((search_mode, has_overlay, sidebar_focused, is_mermaid_modal))
+        .filter_map(
+            |((search_mode, has_overlay, sidebar_focused, is_mermaid_modal), event)| {
+                let keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    text: _,
+                    modified_key,
+                    physical_key: _,
+                    location: _,
+                    repeat: _,
+                } = event
+                else {
+                    return None;
+                };
 
-            // Escape always closes overlay, search, or sidebar focus
-            if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
-                if has_overlay {
-                    return Some(Message::CloseOverlay);
+                // Escape always closes overlay, search, or sidebar focus
+                if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
+                    if has_overlay {
+                        return Some(Message::CloseOverlay);
+                    }
+                    if search_mode {
+                        return Some(Message::SearchClose);
+                    }
+                    if sidebar_focused {
+                        return Some(Message::UnfocusSidebar);
+                    }
+                    return None;
                 }
+
                 if search_mode {
-                    return Some(Message::SearchClose);
+                    return None;
                 }
+
+                if has_overlay {
+                    if is_mermaid_modal {
+                        if modifiers.control() {
+                            let ctrl_s = match &key {
+                                keyboard::Key::Character(c) => c.as_str(),
+                                _ => "",
+                            };
+                            match ctrl_s {
+                                "=" | "+" => return Some(Message::MermaidZoomIn),
+                                "-" => return Some(Message::MermaidZoomOut),
+                                _ => {}
+                            }
+                        } else {
+                            match &key {
+                                keyboard::Key::Named(named) => match named {
+                                    keyboard::key::Named::ArrowDown => {
+                                        return Some(Message::MermaidScrollBy(0.0, LINE_SCROLL));
+                                    }
+                                    keyboard::key::Named::ArrowUp => {
+                                        return Some(Message::MermaidScrollBy(0.0, -LINE_SCROLL));
+                                    }
+                                    keyboard::key::Named::ArrowLeft => {
+                                        return Some(Message::MermaidScrollBy(-LINE_SCROLL, 0.0));
+                                    }
+                                    keyboard::key::Named::ArrowRight => {
+                                        return Some(Message::MermaidScrollBy(LINE_SCROLL, 0.0));
+                                    }
+                                    _ => {}
+                                },
+                                keyboard::Key::Character(c) => match c.as_str() {
+                                    "j" => return Some(Message::MermaidScrollBy(0.0, LINE_SCROLL)),
+                                    "k" => {
+                                        return Some(Message::MermaidScrollBy(0.0, -LINE_SCROLL));
+                                    }
+                                    "h" => {
+                                        return Some(Message::MermaidScrollBy(-LINE_SCROLL, 0.0));
+                                    }
+                                    "l" => return Some(Message::MermaidScrollBy(LINE_SCROLL, 0.0)),
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                    return None;
+                }
+
+                // Sidebar-focused mode: j/k/arrows navigate headings
                 if sidebar_focused {
-                    return Some(Message::UnfocusSidebar);
+                    return match &key {
+                        keyboard::Key::Named(named) => match named {
+                            keyboard::key::Named::ArrowDown => Some(Message::SidebarNext),
+                            keyboard::key::Named::ArrowUp => Some(Message::SidebarPrev),
+                            keyboard::key::Named::Enter => Some(Message::SidebarActivate),
+                            _ => None,
+                        },
+                        keyboard::Key::Character(c) => match c.as_str() {
+                            "j" => Some(Message::SidebarNext),
+                            "k" => Some(Message::SidebarPrev),
+                            "o" => Some(Message::SidebarToggleFocus),
+                            _ => {
+                                if modifiers.control() && c.as_str() == "b" {
+                                    Some(Message::SidebarToggleVisibility)
+                                } else {
+                                    None
+                                }
+                            }
+                        },
+                        _ => None,
+                    };
                 }
-                return None;
-            }
 
-            if search_mode {
-                return None;
-            }
-
-            if has_overlay {
-                return None;
-            }
-
-            // Sidebar-focused mode: j/k/arrows navigate headings
-            if sidebar_focused {
-                return match &key {
+                match &key {
                     keyboard::Key::Named(named) => match named {
-                        keyboard::key::Named::ArrowDown => Some(Message::SidebarNext),
-                        keyboard::key::Named::ArrowUp => Some(Message::SidebarPrev),
-                        keyboard::key::Named::Enter => Some(Message::SidebarActivate),
+                        keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
+                        keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
+                        keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
+                        keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
+                        keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
+                        keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
+                        keyboard::key::Named::Home => Some(Message::ScrollToTop),
+                        keyboard::key::Named::End => Some(Message::ScrollToBottom),
+                        keyboard::key::Named::Space => Some(Message::ScrollBy(360.0)),
+                        keyboard::key::Named::Tab => {
+                            if modifiers.shift() {
+                                Some(Message::FocusPrevLink)
+                            } else {
+                                Some(Message::FocusNextLink)
+                            }
+                        }
+                        keyboard::key::Named::Enter => Some(Message::ActivateLink),
                         _ => None,
                     },
-                    keyboard::Key::Character(c) => match c.as_str() {
-                        "j" => Some(Message::SidebarNext),
-                        "k" => Some(Message::SidebarPrev),
-                        "o" => Some(Message::SidebarToggleFocus),
-                        _ => {
-                            if modifiers.control() && c.as_str() == "b" {
-                                Some(Message::SidebarToggleVisibility)
-                            } else {
-                                None
+                    keyboard::Key::Character(_) => {
+                        // Use `key` (unmodified) for Ctrl combos, `modified_key`
+                        // (shift-aware) for plain keystrokes so '?' (Shift+/) is
+                        // distinguished from '/' and 'G' (Shift+g) from 'g'.
+                        let ctrl_s = match &key {
+                            keyboard::Key::Character(c) => c.as_str(),
+                            _ => "",
+                        };
+                        let s = match &modified_key {
+                            keyboard::Key::Character(c) => c.as_str(),
+                            _ => "",
+                        };
+                        if modifiers.control() {
+                            match ctrl_s {
+                                "d" => Some(Message::ScrollBy(360.0)),
+                                "u" => Some(Message::ScrollBy(-360.0)),
+                                "f" => Some(Message::SearchOpen),
+                                "b" => Some(Message::SidebarToggleVisibility),
+                                "t" => Some(Message::CycleTheme),
+                                "r" => Some(Message::ReloadFile),
+                                "c" => Some(Message::CopyToClipboard),
+                                _ => None,
                             }
-                        }
-                    },
-                    _ => None,
-                };
-            }
-
-            match &key {
-                keyboard::Key::Named(named) => match named {
-                    keyboard::key::Named::ArrowDown => Some(Message::ScrollBy(LINE_SCROLL)),
-                    keyboard::key::Named::ArrowUp => Some(Message::ScrollBy(-LINE_SCROLL)),
-                    keyboard::key::Named::ArrowLeft => Some(Message::HistoryBack),
-                    keyboard::key::Named::ArrowRight => Some(Message::HistoryForward),
-                    keyboard::key::Named::PageDown => Some(Message::ScrollBy(360.0)),
-                    keyboard::key::Named::PageUp => Some(Message::ScrollBy(-360.0)),
-                    keyboard::key::Named::Home => Some(Message::ScrollToTop),
-                    keyboard::key::Named::End => Some(Message::ScrollToBottom),
-                    keyboard::key::Named::Space => Some(Message::ScrollBy(360.0)),
-                    keyboard::key::Named::Tab => {
-                        if modifiers.shift() {
-                            Some(Message::FocusPrevLink)
+                        } else if modifiers.alt() {
+                            None
                         } else {
-                            Some(Message::FocusNextLink)
-                        }
-                    }
-                    keyboard::key::Named::Enter => Some(Message::ActivateLink),
-                    _ => None,
-                },
-                keyboard::Key::Character(_) => {
-                    // Use `key` (unmodified) for Ctrl combos, `modified_key`
-                    // (shift-aware) for plain keystrokes so '?' (Shift+/) is
-                    // distinguished from '/' and 'G' (Shift+g) from 'g'.
-                    let ctrl_s = match &key {
-                        keyboard::Key::Character(c) => c.as_str(),
-                        _ => "",
-                    };
-                    let s = match &modified_key {
-                        keyboard::Key::Character(c) => c.as_str(),
-                        _ => "",
-                    };
-                    if modifiers.control() {
-                        match ctrl_s {
-                            "d" => Some(Message::ScrollBy(360.0)),
-                            "u" => Some(Message::ScrollBy(-360.0)),
-                            "f" => Some(Message::SearchOpen),
-                            "b" => Some(Message::SidebarToggleVisibility),
-                            "t" => Some(Message::CycleTheme),
-                            "r" => Some(Message::ReloadFile),
-                            "c" => Some(Message::CopyToClipboard),
-                            _ => None,
-                        }
-                    } else if modifiers.alt() {
-                        None
-                    } else {
-                        match s {
-                            "j" => Some(Message::ScrollBy(LINE_SCROLL)),
-                            "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
-                            "h" => Some(Message::HistoryBack),
-                            "l" => Some(Message::HistoryForward),
-                            "n" => Some(Message::SearchNext),
-                            "p" => Some(Message::SearchPrev),
-                            "/" => Some(Message::SearchOpen),
-                            "?" => Some(Message::ShowShortcuts),
-                            "o" => Some(Message::SidebarToggleFocus),
-                            "g" | "G" | "q" | "Z" | "`" => {
-                                Some(Message::PendingKey(s.chars().next().unwrap()))
+                            match s {
+                                "j" => Some(Message::ScrollBy(LINE_SCROLL)),
+                                "k" => Some(Message::ScrollBy(-LINE_SCROLL)),
+                                "h" => Some(Message::HistoryBack),
+                                "l" => Some(Message::HistoryForward),
+                                "n" => Some(Message::SearchNext),
+                                "p" => Some(Message::SearchPrev),
+                                "/" => Some(Message::SearchOpen),
+                                "?" => Some(Message::ShowShortcuts),
+                                "o" => Some(Message::SidebarToggleFocus),
+                                "g" | "G" | "q" | "Z" | "`" => {
+                                    Some(Message::PendingKey(s.chars().next().unwrap()))
+                                }
+                                _ => None,
                             }
-                            _ => None,
                         }
                     }
+                    _ => None,
                 }
-                _ => None,
-            }
-        });
+            },
+        );
     // Mouse events for sidebar drag tracking.
     //
     // CRITICAL: We gate on `sidebar_dragging` so that cursor-move events only

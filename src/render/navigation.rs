@@ -14,7 +14,7 @@ use iced::widget::operation::{self, RelativeOffset};
 use smdr::markdown as md_helpers;
 
 use super::images::load_file;
-use super::state::{MdrApp, Message, NavEntry, SCROLLABLE_ID};
+use super::state::{MdrApp, Message, NavEntry, Overlay, SCROLLABLE_ID};
 
 // ---------------------------------------------------------------------------
 // Scroll fraction conversion helpers
@@ -88,6 +88,17 @@ pub(super) fn restore_nav_entry(app: &mut MdrApp) -> Task<Message> {
 /// - otherwise → treat as a local file path (relative to the current
 ///   document) and load it, pushing the current position onto history.
 pub(super) fn handle_link(app: &mut MdrApp, url: String) -> Task<Message> {
+    if url.starts_with("smdr-mermaid:") {
+        let code = url.strip_prefix("smdr-mermaid:").unwrap();
+        let code = urlencoding::decode(code)
+            .unwrap_or(std::borrow::Cow::Borrowed(code))
+            .into_owned();
+        if let Some(handle) = app.mermaid_cache.get(&code) {
+            app.overlay = Overlay::MermaidModal(handle.clone(), 1.0);
+        }
+        return Task::none();
+    }
+
     if url.starts_with("http://") || url.starts_with("https://") {
         let _ = open::that(&url);
         return Task::none();

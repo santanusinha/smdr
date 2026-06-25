@@ -149,6 +149,22 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             }
             Task::none()
         }
+        Message::MermaidZoomIn => {
+            if let Overlay::MermaidModal(handle, zoom) = &app.overlay {
+                app.overlay = Overlay::MermaidModal(handle.clone(), (*zoom * 1.2).min(5.0));
+            }
+            Task::none()
+        }
+        Message::MermaidZoomOut => {
+            if let Overlay::MermaidModal(handle, zoom) = &app.overlay {
+                app.overlay = Overlay::MermaidModal(handle.clone(), (*zoom / 1.2).max(0.2));
+            }
+            Task::none()
+        }
+        Message::MermaidScrollBy(dx, dy) => operation::scroll_by(
+            Id::new(super::state::MERMAID_SCROLLABLE_ID),
+            AbsoluteOffset { x: dx, y: dy },
+        ),
         Message::MermaidRendered(code, svg_bytes) => {
             app.mermaid_pending.remove(&code);
             if let Some(svg_bytes) = svg_bytes {

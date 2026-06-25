@@ -38,6 +38,9 @@ pub(super) const SEARCH_INPUT_ID: &str = "smdr-search-input";
 /// Scrollable widget ID for sidebar programmatic scrolling.
 pub(super) const SIDEBAR_SCROLLABLE_ID: &str = "smdr-sidebar-scroll";
 
+/// Scrollable widget ID for mermaid modal scrolling.
+pub(super) const MERMAID_SCROLLABLE_ID: &str = "smdr-mermaid-scroll";
+
 /// Default sidebar ratio (fraction of window width).
 pub(super) const DEFAULT_SIDEBAR_RATIO: f32 = 0.25;
 
@@ -87,11 +90,12 @@ pub(super) struct NavEntry {
 // ---------------------------------------------------------------------------
 
 /// Which overlay panel (if any) is currently displayed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum Overlay {
     None,
     Shortcuts,
     About,
+    MermaidModal(svg::Handle, f32),
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +121,8 @@ pub(super) enum Message {
     CycleTheme,
     ShowShortcuts,
     ShowAbout,
+    // OpenMermaidModal is not used since we set the state directly in navigation, or wait, do we?
+    // We should delete it.
     CloseOverlay,
     SidebarToggleVisibility,
     SidebarToggleFocus,
@@ -132,8 +138,9 @@ pub(super) enum Message {
     Scrolled(scrollable::Viewport),
     WindowResized(Size),
     ImageLoaded(String, Option<ImageData>),
-    /// Mermaid diagram rendered to SVG: (source_code, svg_bytes).
-    MermaidRendered(String, Option<Vec<u8>>),
+    MermaidZoomIn,
+    MermaidZoomOut,
+    MermaidScrollBy(f32, f32),
     ScrollToTop,
     ScrollToBottom,
     JumpToLastPosition,
@@ -143,6 +150,8 @@ pub(super) enum Message {
     CopyToClipboard,
     ExitApp,
     PendingKey(char),
+    /// Mermaid diagram rendered to SVG: (source_code, svg_bytes).
+    MermaidRendered(String, Option<Vec<u8>>),
 }
 
 // ---------------------------------------------------------------------------

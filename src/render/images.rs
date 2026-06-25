@@ -148,7 +148,10 @@ pub(super) fn spawn_mermaid_loads(app: &mut MdrApp) -> Option<Task<Message>> {
 
 /// Render a mermaid diagram source to SVG bytes.
 fn render_mermaid(code: &str) -> Result<Vec<u8>, ()> {
-    let svg_str = mermaid_rs_renderer::render(code).map_err(|_| ())?;
+    let mut options = mermaid_rs_renderer::RenderOptions::modern();
+    options.layout.node_spacing = 80.0;
+    options.layout.rank_spacing = 80.0;
+    let svg_str = mermaid_rs_renderer::render_with_options(code, options).map_err(|_| ())?;
     Ok(svg_str.into_bytes())
 }
 
