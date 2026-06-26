@@ -55,8 +55,15 @@ smdr -w README.md
 |------|-------------|
 | `-w`, `--watch` | Watch file for changes and auto-reload |
 | `-t`, `--theme <THEME>` | Color theme (default: `system`) |
-| `--no-network` | Disable network image fetching |
+| `--no-network` | Disable network image fetching (use local files only) |
 | `--list-themes` | List available themes and exit |
+
+!!! tip "stdin support"
+    smdr automatically detects piped input — no flag needed:
+    ```sh
+    cat README.md | smdr
+    man git | smdr
+    ```
 
 ---
 
@@ -119,6 +126,20 @@ smdr -w README.md
 | `?` | Show keyboard shortcuts |
 | `qq` / `ZZ` | Exit |
 | `Esc` | Close overlay / unfocus sidebar |
+
+### Mermaid diagrams
+
+Click any Mermaid diagram to open it in a full-screen modal.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-=` / `Ctrl-+` | Zoom in |
+| `Ctrl--` | Zoom out |
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `h` / `←` | Scroll left |
+| `l` / `→` | Scroll right |
+| `Esc` | Close modal |
 
 ---
 
