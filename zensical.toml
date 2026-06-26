@@ -2,6 +2,8 @@
 site_name = "smdr"
 site_url = "https://santanusinha.github.io/smdr"
 site_description = "Simple Markdown Reader"
+repo_url = "https://github.com/santanusinha/smdr"
+repo_name = "GitHub"
 
 [project.theme]
 features = ["navigation.instant", "navigation.top", "content.code.copy"]
