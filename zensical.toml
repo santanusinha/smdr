@@ -4,7 +4,7 @@ site_url = "https://santanusinha.github.io/smdr"
 site_description = "Simple Markdown Reader"
 
 [theme]
-features = ["navigation.instant", "navigation.top"]
+features = ["navigation.instant", "navigation.top", "content.code.copy"]
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
