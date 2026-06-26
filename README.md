@@ -15,7 +15,7 @@ cargo install smdr
 ### Homebrew (macOS / Linux)
 
 ```sh
-brew tap santanusinha/smdr
+brew tap santanusinha/smdr https://github.com/santanusinha/smdr
 brew install smdr
 ```
 

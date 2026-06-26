@@ -13,7 +13,7 @@ Renders markdown files in a native window with vim-style navigation, live file w
 ### Homebrew (macOS / Linux)
 
 ```sh
-brew tap santanusinha/smdr
+brew tap santanusinha/smdr https://github.com/santanusinha/smdr
 brew install smdr
 ```
 
