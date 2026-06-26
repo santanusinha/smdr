@@ -5,6 +5,7 @@ use iced::widget::Id;
 
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 
+use smdr::persist::{self, PersistedState};
 use smdr::theme::ThemeArg;
 
 use super::images;
@@ -97,12 +98,16 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         }
         Message::ThemeChanged(theme_arg) => {
             app.active_theme = theme_arg;
+            persist::save(&PersistedState { theme: theme_arg });
             Task::none()
         }
         Message::CycleTheme => {
             let all = ThemeArg::ALL;
             let idx = all.iter().position(|t| *t == app.active_theme).unwrap_or(0);
             app.active_theme = all[(idx + 1) % all.len()];
+            persist::save(&PersistedState {
+                theme: app.active_theme,
+            });
             Task::none()
         }
         Message::ShowShortcuts => {

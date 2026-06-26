@@ -52,6 +52,8 @@ fn main() {
 
     let config = ViewerConfig {
         theme: cli.theme,
+        theme_explicit: cli.theme != ThemeArg::System
+            || std::env::args().any(|a| a == "--theme" || a == "-t"),
         watch: cli.watch,
         network_enabled: !cli.no_network,
     };

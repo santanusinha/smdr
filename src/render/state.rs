@@ -14,6 +14,9 @@ use smdr::theme::ThemeArg;
 #[derive(Debug, Clone, Copy)]
 pub struct ViewerConfig {
     pub theme: ThemeArg,
+    /// `true` when the user explicitly passed `--theme` on the command line.
+    /// When `false` the persisted theme (if any) takes precedence at startup.
+    pub theme_explicit: bool,
     pub watch: bool,
     /// Allow fetching remote images over the network.
     pub network_enabled: bool,

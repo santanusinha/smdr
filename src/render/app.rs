@@ -8,6 +8,7 @@ use iced::Task;
 use iced::widget::markdown;
 
 use smdr::markdown::{self as md_helpers};
+use smdr::persist;
 use smdr::theme::ThemeArg;
 use smdr::watcher;
 
@@ -47,6 +48,13 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
 
     let theme_arg = config.theme;
     let file_path = file_path.to_path_buf();
+
+    // Apply persisted theme unless the user explicitly chose one on the CLI.
+    let theme_arg = if config.theme_explicit {
+        theme_arg
+    } else {
+        persist::load().map(|s| s.theme).unwrap_or(theme_arg)
+    };
 
     let app_state = AppInit {
         markdown_src,
@@ -101,7 +109,12 @@ pub fn launch_stdin(
         markdown_src: content,
         file_path,
         watcher_rx: None,
-        theme: config.theme,
+        // Apply persisted theme unless the user explicitly chose one on the CLI.
+        theme: if config.theme_explicit {
+            config.theme
+        } else {
+            persist::load().map(|s| s.theme).unwrap_or(config.theme)
+        },
         title,
         network_enabled: config.network_enabled,
     };

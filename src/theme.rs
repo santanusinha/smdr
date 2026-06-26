@@ -1,7 +1,10 @@
 //! Theme definitions and conversion to iced themes.
 
+use serde::{Deserialize, Serialize};
+
 /// CLI-parseable theme selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThemeArg {
     /// Follow the operating-system dark/light preference (default).
     System,
