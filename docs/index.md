@@ -10,6 +10,19 @@ Renders markdown files in a native window with vim-style navigation, live file w
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew tap santanusinha/smdr
+brew install smdr
+```
+
+### From crates.io
+
+```sh
+cargo install smdr
+```
+
 ### From source
 
 ```sh
