@@ -23,6 +23,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Docs
 - GitHub Pages workflow, Mermaid keymap section, stdin usage tip added to
   the documentation site.
+- **Homebrew tap** — [`santanusinha/homebrew-smdr`](https://github.com/santanusinha/homebrew-smdr)
+  published; macOS / Linux users can now install with
+  `brew tap santanusinha/smdr && brew install smdr`.
 
 ---
 
