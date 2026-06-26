@@ -6,18 +6,18 @@ use std::sync::mpsc::Receiver;
 
 use iced::Task;
 use iced::widget::markdown;
-use iced::{Size, window};
 #[cfg(target_os = "linux")]
 use iced::window::settings::PlatformSpecific;
+use iced::{Size, window};
 
 use smdr::markdown::{self as md_helpers};
 use smdr::persist;
 use smdr::theme::ThemeArg;
 use smdr::watcher;
 
-use super::images;
 #[cfg(target_os = "linux")]
 use super::desktop;
+use super::images;
 use super::state::{
     DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, MdrApp, Message, NavEntry, Overlay, ViewerConfig,
 };
