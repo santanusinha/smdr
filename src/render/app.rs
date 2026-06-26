@@ -6,6 +6,9 @@ use std::sync::mpsc::Receiver;
 
 use iced::Task;
 use iced::widget::markdown;
+use iced::{Size, window};
+#[cfg(target_os = "linux")]
+use iced::window::settings::PlatformSpecific;
 
 use smdr::markdown::{self as md_helpers};
 use smdr::persist;
@@ -13,17 +16,38 @@ use smdr::theme::ThemeArg;
 use smdr::watcher;
 
 use super::images;
+#[cfg(target_os = "linux")]
+use super::desktop;
 use super::state::{
     DEFAULT_SIDEBAR_RATIO, INITIAL_WINDOW_WIDTH, MdrApp, Message, NavEntry, Overlay, ViewerConfig,
 };
 use super::update;
 use super::view;
 
+/// PNG icon bytes embedded at compile time.
+const ICON_PNG: &[u8] = include_bytes!("../../assets/icon_256.png");
+
+/// Builds the window icon from the embedded PNG bytes.
+/// Returns `None` and prints a warning if the icon cannot be decoded.
+fn build_window_icon() -> Option<window::Icon> {
+    match window::icon::from_file_data(ICON_PNG, None) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            eprintln!("Warning: could not load window icon: {e}");
+            None
+        }
+    }
+}
+
 /// Launches the viewer window and blocks until it is closed.
 ///
 /// # Errors
 /// Returns an error if the window cannot be created.
 pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Install icon + .desktop file into ~/.local/share on first run (Linux only).
+    #[cfg(target_os = "linux")]
+    desktop::ensure_xdg_assets();
+
     let markdown_src = std::fs::read_to_string(file_path)?;
 
     let watcher_rx: Option<Receiver<()>> = if config.watch {
@@ -83,7 +107,16 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
     .subscription(view::build_subscription)
     .theme(|app: &MdrApp| app.active_theme.to_theme())
     .title(|app: &MdrApp| app.title.clone())
-    .window_size((960.0, 720.0))
+    .window(window::Settings {
+        size: Size::new(960.0, 720.0),
+        icon: build_window_icon(),
+        #[cfg(target_os = "linux")]
+        platform_specific: PlatformSpecific {
+            application_id: String::from("smdr"),
+            ..PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    })
     .run()
     .map_err(|e| e.to_string().into())
 }
@@ -99,8 +132,11 @@ pub fn launch_stdin(
     content: String,
     config: &ViewerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let title = String::from("smdr \u{2014} stdin");
-    // Use cwd so relative links in the document resolve against the invoking directory.
+    // Install icon + .desktop file into ~/.local/share on first run (Linux only).
+    #[cfg(target_os = "linux")]
+    desktop::ensure_xdg_assets();
+
+    let title = String::from("smdr — stdin");
     let file_path = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("stdin");
@@ -135,7 +171,16 @@ pub fn launch_stdin(
     .subscription(view::build_subscription)
     .theme(|app: &MdrApp| app.active_theme.to_theme())
     .title(|app: &MdrApp| app.title.clone())
-    .window_size((960.0, 720.0))
+    .window(window::Settings {
+        size: Size::new(960.0, 720.0),
+        icon: build_window_icon(),
+        #[cfg(target_os = "linux")]
+        platform_specific: PlatformSpecific {
+            application_id: String::from("smdr"),
+            ..PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    })
     .run()
     .map_err(|e| e.to_string().into())
 }

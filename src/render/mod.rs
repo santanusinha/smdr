@@ -15,6 +15,8 @@
 //! - Collapsible, resizable left sidebar showing document outline (headings).
 
 mod app;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod images;
 mod navigation;
 mod search;
