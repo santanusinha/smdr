@@ -3,7 +3,7 @@ site_name = "smdr"
 site_url = "https://santanusinha.github.io/smdr"
 site_description = "Simple Markdown Reader"
 
-[theme]
+[project.theme]
 features = ["navigation.instant", "navigation.top", "content.code.copy"]
 
 [[project.theme.palette]]
