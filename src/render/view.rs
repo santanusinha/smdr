@@ -55,8 +55,9 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
         image_failed: &app.image_failed,
         mermaid_cache: &app.mermaid_cache,
         mermaid_pending: &app.mermaid_pending,
+        search_query: &app.search_query,
     };
-    let md_view: Element<Message> =
+    let md_view: Element<'_, Message> =
         markdown::view_with(app.content.items(), settings, &viewer).map(Message::LinkClicked);
 
     let content_area = scrollable(
