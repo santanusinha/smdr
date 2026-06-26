@@ -21,9 +21,9 @@ struct Cli {
     #[arg(short, long)]
     watch: bool,
 
-    /// Color theme.
-    #[arg(short, long, value_enum, default_value = "system")]
-    theme: ThemeArg,
+    /// Color theme (default: system).
+    #[arg(short, long, value_enum)]
+    theme: Option<ThemeArg>,
 
     /// Disable network image fetching (use local files only).
     #[arg(long)]
@@ -50,10 +50,11 @@ fn main() {
         return;
     }
 
+    let theme = cli.theme.unwrap_or(ThemeArg::System);
     let config = ViewerConfig {
-        theme: cli.theme,
-        theme_explicit: cli.theme != ThemeArg::System
-            || std::env::args().any(|a| a == "--theme" || a == "-t"),
+        theme,
+        // true iff --theme / -t was explicitly provided on the command line.
+        theme_explicit: cli.theme.is_some(),
         watch: cli.watch,
         network_enabled: !cli.no_network,
     };

@@ -20,6 +20,7 @@ pub(super) fn load_file(app: &mut MdrApp, path: &Path) -> Task<Message> {
             app.links = md_helpers::extract_links(&src);
             app.toc = md_helpers::extract_toc(&src);
             app.focused_link = None;
+            app.line_count = src.lines().count();
             app.raw_markdown = src;
             app.content = markdown::Content::parse(&app.raw_markdown);
             app.file_path = path.to_path_buf();
@@ -115,8 +116,12 @@ pub(super) fn spawn_mermaid_loads(app: &mut MdrApp) -> Option<Task<Message>> {
                 if !app.mermaid_cache.contains_key(&code_buf)
                     && !app.mermaid_pending.contains(&code_buf)
                 {
-                    app.mermaid_pending.insert(code_buf.clone());
-                    to_render.push(code_buf.clone());
+                    // Move code_buf into to_render (zero extra alloc), then
+                    // clone the stored value for mermaid_pending (1 clone total
+                    // instead of the previous 2).
+                    to_render.push(std::mem::take(&mut code_buf));
+                    app.mermaid_pending
+                        .insert(to_render.last().expect("just pushed").clone());
                 }
             }
             Event::Text(t) if in_mermaid => {
@@ -222,6 +227,7 @@ pub(super) fn poll_watcher(app: &mut MdrApp) -> Task<Message> {
                 app.links = md_helpers::extract_links(&new_content);
                 app.toc = md_helpers::extract_toc(&new_content);
                 app.focused_link = None;
+                app.line_count = new_content.lines().count();
                 app.raw_markdown = new_content;
                 app.content = markdown::Content::parse(&app.raw_markdown);
                 return spawn_image_loads(app);

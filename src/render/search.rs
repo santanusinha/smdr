@@ -25,11 +25,13 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Result<Task<
         Message::SearchClose => {
             app.search_mode = false;
             app.search_query.clear();
+            app.search_query_lower.clear();
             app.search_hits.clear();
             app.current_hit = None;
             Ok(Task::none())
         }
         Message::SearchInput(q) => {
+            app.search_query_lower = q.to_lowercase();
             app.search_query = q;
             recompute_search_hits(app);
             Ok(scroll_to_current_hit(app))
@@ -69,18 +71,20 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Result<Task<
 // ---------------------------------------------------------------------------
 
 /// Recompute the set of line indices matching the current search query.
+/// Recompute the set of line indices matching the current search query.
 pub(super) fn recompute_search_hits(app: &mut MdrApp) {
     app.search_hits.clear();
     app.current_hit = None;
 
-    if app.search_query.is_empty() {
+    if app.search_query_lower.is_empty() {
         return;
     }
 
-    let query_lower = app.search_query.to_lowercase();
-
     for (i, line) in app.raw_markdown.lines().enumerate() {
-        if line.to_lowercase().contains(&query_lower) {
+        if line
+            .to_lowercase()
+            .contains(app.search_query_lower.as_str())
+        {
             app.search_hits.push(i);
         }
     }
@@ -99,7 +103,7 @@ pub(super) fn scroll_to_current_hit(app: &MdrApp) -> Task<Message> {
         return Task::none();
     };
 
-    let total_lines = app.raw_markdown.lines().count() as f32;
+    let total_lines = app.line_count as f32;
     if total_lines <= 0.0 {
         return Task::none();
     }

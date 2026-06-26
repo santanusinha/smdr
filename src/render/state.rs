@@ -163,6 +163,9 @@ pub(super) enum Message {
 
 pub(super) struct MdrApp {
     pub(super) raw_markdown: String,
+    /// Number of lines in `raw_markdown`, kept in sync on every assignment.
+    /// Replaces 5 independent O(N) `raw_markdown.lines().count()` calls.
+    pub(super) line_count: usize,
     pub(super) content: markdown::Content,
     pub(super) file_path: PathBuf,
     pub(super) watcher_rx: Option<Receiver<()>>,
@@ -180,6 +183,9 @@ pub(super) struct MdrApp {
     pub(super) focused_link: Option<usize>,
     pub(super) search_mode: bool,
     pub(super) search_query: String,
+    /// Lowercase version of `search_query`, kept in sync on every mutation.
+    /// Avoids recomputing `to_lowercase()` on every keystroke in the search loop.
+    pub(super) search_query_lower: String,
     pub(super) search_hits: Vec<usize>,
     pub(super) current_hit: Option<usize>,
     pub(super) overlay: Overlay,

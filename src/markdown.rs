@@ -26,6 +26,12 @@ pub struct TocEntry {
     pub text: String,
     /// Line number (0-based) in the source.
     pub line: usize,
+    /// Pre-computed GitHub-style anchor slug (without leading `#`).
+    /// Used by `compute_anchor_y` to avoid re-scanning raw markdown.
+    pub slug: String,
+    /// Pre-computed normalized form (ASCII alphanumeric only, lowercase)
+    /// for the relaxed-match fallback in anchor navigation.
+    pub slug_normalized: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,10 +73,13 @@ pub fn extract_links(source: &str) -> Vec<DocumentLink> {
             }
             Event::End(TagEnd::Link) => {
                 if let Some((url, line)) = in_link.take() {
+                    // For normal [text](url) links, move link_text instead of cloning.
+                    // For bare-URL links (link_text is empty), one url.clone() is
+                    // still required because url is also stored in DocumentLink::url.
                     let display = if link_text.is_empty() {
                         url.clone()
                     } else {
-                        link_text.clone()
+                        std::mem::take(&mut link_text)
                     };
                     links.push(DocumentLink {
                         line,
@@ -102,6 +111,7 @@ pub fn extract_links(source: &str) -> Vec<DocumentLink> {
 /// Extract all headings from the markdown source for the sidebar outline.
 pub fn extract_toc(source: &str) -> Vec<TocEntry> {
     let mut entries = Vec::new();
+    let mut seen: HashMap<String, u32> = HashMap::new();
 
     for (line_num, line) in source.lines().enumerate() {
         let trimmed = line.trim_start_matches('#');
@@ -119,10 +129,16 @@ pub fn extract_toc(source: &str) -> Vec<TocEntry> {
         }
         // Strip backticks for display
         let display_text = heading_text.replace('`', "");
+        // Compute the GitHub slug once at load time and strip the leading '#'.
+        let slug_with_hash = github_slug(heading_text, &mut seen);
+        let slug = slug_with_hash.trim_start_matches('#').to_owned();
+        let slug_normalized = normalize_for_match(&display_text.to_lowercase());
         entries.push(TocEntry {
             level: hash_count as u8,
             text: display_text,
             line: line_num,
+            slug,
+            slug_normalized,
         });
     }
 

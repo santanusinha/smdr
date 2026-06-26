@@ -21,6 +21,10 @@ pub(super) struct MdrViewer<'b> {
     /// Active search query for in-text highlighting.  Empty string means no
     /// highlighting is applied.
     pub(super) search_query: &'b str,
+    /// Pre-lowercased version of `search_query`, kept in sync by the message
+    /// handler.  Passed directly into `apply_search_highlights` to avoid a
+    /// `to_lowercase()` allocation per paragraph/heading per frame.
+    pub(super) search_query_lower: &'b str,
 }
 
 impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrViewer<'b> {
@@ -40,7 +44,7 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
                 .on_link_click(Self::on_link_click)
                 .into();
         }
-        let highlighted = apply_search_highlights(&spans, self.search_query);
+        let highlighted = apply_search_highlights(&spans, self.search_query_lower);
         rich_text(highlighted)
             .size(settings.text_size)
             .on_link_click(Self::on_link_click)
@@ -58,7 +62,7 @@ impl<'a, 'b: 'a> markdown::Viewer<'a, markdown::Uri, Theme, Renderer> for MdrVie
         if self.search_query.is_empty() {
             return markdown::heading(settings, level, text, index, Self::on_link_click);
         }
-        let highlighted = apply_search_highlights(&spans, self.search_query);
+        let highlighted = apply_search_highlights(&spans, self.search_query_lower);
         let size = heading_size(settings, level);
         rich_text(highlighted)
             .size(size)
@@ -207,14 +211,16 @@ const HIGHLIGHT_FG: Color = Color {
 };
 
 /// Walk the existing `spans` and split each one at every case-insensitive
-/// occurrence of `query`, wrapping matches in a yellow highlight.
+/// occurrence of `query_lower` (already lowercased by the caller), wrapping
+/// matches in a yellow highlight.
 ///
 /// Returns a `Vec` of owned `'static` spans ready for `rich_text(…)`.
 fn apply_search_highlights(
     spans: &Arc<[iced::widget::text::Span<'static, markdown::Uri>]>,
-    query: &str,
+    query_lower: &str,
 ) -> Vec<iced::widget::text::Span<'static, markdown::Uri>> {
-    let query_lower = query.to_lowercase();
+    // query_lower is already lowercased by the caller (cached in MdrApp);
+    // no allocation needed here.
     let mut result = Vec::new();
 
     for original in spans.iter() {
@@ -227,9 +233,9 @@ fn apply_search_highlights(
         let text_lower = text_str.to_lowercase();
         let mut cursor = 0usize;
 
-        while let Some(rel) = text_lower[cursor..].find(&query_lower) {
+        while let Some(rel) = text_lower[cursor..].find(query_lower) {
             let match_start = cursor + rel;
-            let match_end = match_start + query.len();
+            let match_end = match_start + query_lower.len();
 
             // Emit text before the match (if any)
             if match_start > cursor {

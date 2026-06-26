@@ -56,6 +56,7 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
         mermaid_cache: &app.mermaid_cache,
         mermaid_pending: &app.mermaid_pending,
         search_query: &app.search_query,
+        search_query_lower: &app.search_query_lower,
     };
     let md_view: Element<'_, Message> =
         markdown::view_with(app.content.items(), settings, &viewer).map(Message::LinkClicked);

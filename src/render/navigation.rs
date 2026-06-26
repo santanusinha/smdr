@@ -4,7 +4,6 @@
 //! history stack management (push/restore), link handling (external, anchor,
 //! local file), anchor resolution, and heading navigation.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use iced::Task;
@@ -145,45 +144,42 @@ pub(super) fn navigate_to_anchor(app: &mut MdrApp, anchor: &str) -> Task<Message
 
 /// Compute the scroll-Y offset for a document anchor (heading slug).
 ///
-/// Tries an exact GitHub-style slug match first, then falls back to a
-/// relaxed normalized comparison. Returns `None` if no matching heading
-/// is found.
+/// Uses pre-computed slugs stored in [`MdrApp::toc`] (populated at load
+/// time by [`md_helpers::extract_toc`]) instead of re-scanning raw
+/// markdown on every anchor click.  Tries an exact GitHub-style slug
+/// match first, then falls back to a relaxed normalized comparison.
+/// Returns `None` if no matching heading is found.
 fn compute_anchor_y(app: &MdrApp, anchor: &str) -> Option<f32> {
-    let total_lines = app.raw_markdown.lines().count() as f32;
+    if app.toc.is_empty() {
+        return None;
+    }
+
+    // Line-count is still needed to convert a heading line number to a
+    // scroll fraction (same calculation used by navigate_to_heading).
+    let total_lines = app.line_count as f32;
     if total_lines <= 0.0 {
         return None;
     }
 
     let target_anchor = anchor.to_lowercase();
 
-    // Pass 1: exact slug match using GitHub-style slug generation
-    let mut seen: HashMap<String, u32> = HashMap::new();
-
-    for (i, line) in app.raw_markdown.lines().enumerate() {
-        if let Some(heading_text) = md_helpers::extract_atx_heading(line) {
-            let slug = md_helpers::github_slug(heading_text, &mut seen);
-            let slug_bare = slug.strip_prefix('#').unwrap_or(&slug);
-            if slug_bare == target_anchor {
-                let fraction = (i as f32) / total_lines;
-                return Some(content_fraction_to_scroll_y(app, fraction));
-            }
+    // Pass 1: exact slug match (O(H), no allocation).
+    for entry in &app.toc {
+        if entry.slug == target_anchor {
+            let fraction = (entry.line as f32) / total_lines;
+            return Some(content_fraction_to_scroll_y(app, fraction));
         }
     }
 
-    // Pass 2: relaxed match
+    // Pass 2: relaxed normalized match.
     let anchor_normalized = md_helpers::normalize_for_match(&target_anchor);
     if anchor_normalized.is_empty() {
         return None;
     }
-
-    for (i, line) in app.raw_markdown.lines().enumerate() {
-        if let Some(heading_text) = md_helpers::extract_atx_heading(line) {
-            let heading_normalized =
-                md_helpers::normalize_for_match(&heading_text.replace('`', "").to_lowercase());
-            if heading_normalized == anchor_normalized {
-                let fraction = (i as f32) / total_lines;
-                return Some(content_fraction_to_scroll_y(app, fraction));
-            }
+    for entry in &app.toc {
+        if entry.slug_normalized == anchor_normalized {
+            let fraction = (entry.line as f32) / total_lines;
+            return Some(content_fraction_to_scroll_y(app, fraction));
         }
     }
 
@@ -192,7 +188,7 @@ fn compute_anchor_y(app: &MdrApp, anchor: &str) -> Option<f32> {
 
 /// Scroll so that the link at `idx` is visible at the top of the viewport.
 pub(super) fn scroll_to_link(app: &MdrApp, idx: usize) -> Task<Message> {
-    let total_lines = app.raw_markdown.lines().count() as f32;
+    let total_lines = app.line_count as f32;
     if total_lines <= 0.0 {
         return Task::none();
     }
@@ -209,7 +205,7 @@ pub(super) fn scroll_to_link(app: &MdrApp, idx: usize) -> Task<Message> {
 /// the main message dispatch (re-dispatched from `SidebarActivate`).
 pub(super) fn navigate_to_heading(app: &mut MdrApp, idx: usize) -> Task<Message> {
     if let Some(entry) = app.toc.get(idx) {
-        let total_lines = app.raw_markdown.lines().count() as f32;
+        let total_lines = app.line_count as f32;
         if total_lines > 0.0 {
             let fraction = (entry.line as f32) / total_lines;
             let target_y = content_fraction_to_scroll_y(app, fraction);

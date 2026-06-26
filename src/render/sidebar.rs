@@ -173,7 +173,7 @@ pub(super) fn section_for_scroll_position(app: &MdrApp) -> Option<usize> {
     if app.toc.is_empty() {
         return None;
     }
-    let total_lines = app.raw_markdown.lines().count() as f32;
+    let total_lines = app.line_count as f32;
     if total_lines <= 0.0 {
         return Some(0);
     }

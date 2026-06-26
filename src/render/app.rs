@@ -164,6 +164,7 @@ impl AppInit {
 
         let mut app = MdrApp {
             raw_markdown: self.markdown_src,
+            line_count: 0, // will be set via the helper below
             content,
             file_path: self.file_path.clone(),
             watcher_rx: self.watcher_rx,
@@ -179,6 +180,7 @@ impl AppInit {
             focused_link: None,
             search_mode: false,
             search_query: String::new(),
+            search_query_lower: String::new(),
             search_hits: Vec::new(),
             current_hit: None,
             overlay: Overlay::None,
@@ -201,6 +203,7 @@ impl AppInit {
             content_height: 0.0,
             viewport_height: 0.0,
         };
+        app.line_count = app.raw_markdown.lines().count();
 
         // Mermaid diagrams are rendered asynchronously by spawn_image_loads.
 
