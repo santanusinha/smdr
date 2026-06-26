@@ -4,8 +4,7 @@ Simple Markdown Reader — a fast, native markdown viewer built with Rust.
 
 Renders markdown files in a native window with vim-style navigation, live file watching, and multiple themes.
 
-![Screenshot placeholder](assets/screenshot.png)
-<!-- TODO: Replace with actual screenshot -->
+![Screenshot](assets/screenshot.png)
 
 ---
 
@@ -179,8 +178,6 @@ smdr ships with 22 built-in themes. Use `--list-themes` to see all options.
 | `oxocarbon` | IBM Carbon dark |
 | `ferra` | Warm muted dark |
 
-![Themes placeholder](assets/themes.png)
-<!-- TODO: Replace with actual screenshot showing theme variety -->
 
 ---
 
