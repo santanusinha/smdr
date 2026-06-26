@@ -43,11 +43,17 @@ Read from stdin:
 cat README.md | smdr
 ```
 
-Watch for changes (auto-reload):
+!!! tip "Live file watching"
+    Pass `-w` / `--watch` and smdr will monitor the file for changes and
+    automatically reload the view whenever you save — ideal for editing
+    workflows, documentation previews, and note-taking.
 
-```sh
-smdr -w README.md
-```
+    ```sh
+    smdr -w README.md
+    ```
+
+    Already viewing a file without `-w`? Press **`Ctrl-R`** at any time
+    to manually reload from disk.
 
 ### Options
 
