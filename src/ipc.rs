@@ -45,7 +45,10 @@ fn uid() -> u32 {
 // Client side: hand a path to an already-running instance
 // ---------------------------------------------------------------------------
 
-/// Try to hand `file_path` to an already-running smdr instance.
+/// Try to hand `file_paths` to an already-running smdr instance.
+///
+/// All paths are sent over a single connection, newline-separated, so a batch
+/// of files passed on one command line each open as their own tab.
 ///
 /// This uses a **blocking** `std` Unix socket rather than tokio so it is safe
 /// to call before [`crate::daemon::daemonize`] forks the process — spinning up
@@ -55,7 +58,7 @@ fn uid() -> u32 {
 /// Returns `Err` if no instance is listening (connection refused / socket
 /// missing) or the write fails.  The caller should then become the server.
 #[cfg(unix)]
-pub fn client_send(file_path: &str) -> std::io::Result<()> {
+pub fn client_send(file_paths: &[String]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
@@ -63,14 +66,16 @@ pub fn client_send(file_path: &str) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no socket path"))?;
 
     let mut stream = UnixStream::connect(&path)?;
-    stream.write_all(file_path.as_bytes())?;
-    stream.write_all(b"\n")?;
+    for file_path in file_paths {
+        stream.write_all(file_path.as_bytes())?;
+        stream.write_all(b"\n")?;
+    }
     stream.flush()?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn client_send(_file_path: &str) -> std::io::Result<()> {
+pub fn client_send(_file_paths: &[String]) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "IPC single-instance not supported on this platform",

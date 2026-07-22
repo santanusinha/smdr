@@ -223,6 +223,34 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         // visual slot `v` therefore maps to `tabs[v]` when `v < active_tab`
         // and `tabs[v - 1]` when `v > active_tab`.
         Message::OpenInNewTab(path) => {
+            // If this file is already open, don't create a duplicate tab:
+            // switch to the existing tab (if needed) and reload it from disk so
+            // the user sees the freshest content.  Paths are canonicalized
+            // before comparison so `./a.md`, `a.md`, and an absolute path all
+            // resolve to the same document.
+            let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let same = |p: &std::path::Path| {
+                std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) == target
+            };
+
+            // Already showing in the active tab → reload in place.
+            if same(&app.file_path) {
+                return images::load_file(app, &path);
+            }
+
+            // Open in a background tab → switch there, then reload.
+            if let Some(vec_idx) = app.tabs.iter().position(|t| same(&t.file_path)) {
+                // Map the vector index to its visual slot for `SwitchTab`.
+                let visual = if vec_idx < app.active_tab {
+                    vec_idx
+                } else {
+                    vec_idx + 1
+                };
+                return handle_message(app, Message::SwitchTab(visual))
+                    .chain(images::load_file(app, &path));
+            }
+
+            // Not open anywhere — create a new tab.
             // Snapshot the current (outgoing) tab and re-insert it at its own
             // visual slot so ordering is preserved, then append the new tab at
             // the end and make it active.

@@ -41,12 +41,25 @@ fn build_window_icon() -> Option<window::Icon> {
 
 /// Launches the viewer window and blocks until it is closed.
 ///
+/// `file_paths` must be non-empty. The first path becomes the primary
+/// document; any remaining paths open as additional tabs once the window is up.
+///
 /// # Errors
 /// Returns an error if the window cannot be created.
-pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std::error::Error>> {
+pub fn launch(
+    file_paths: &[std::path::PathBuf],
+    config: &ViewerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Install icon + .desktop file into ~/.local/share on first run (Linux only).
     #[cfg(target_os = "linux")]
     desktop::ensure_xdg_assets();
+
+    let file_path = file_paths
+        .first()
+        .ok_or("launch requires at least one file path")?;
+
+    // Remaining files open as additional tabs after the primary loads.
+    let extra_tabs: Vec<PathBuf> = file_paths.iter().skip(1).cloned().collect();
 
     let markdown_src = std::fs::read_to_string(file_path)?;
 
@@ -87,6 +100,7 @@ pub fn launch(file_path: &Path, config: &ViewerConfig) -> Result<(), Box<dyn std
         theme: theme_arg,
         title,
         network_enabled: config.network_enabled,
+        extra_tabs,
     };
 
     // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
@@ -153,6 +167,7 @@ pub fn launch_stdin(
         },
         title,
         network_enabled: config.network_enabled,
+        extra_tabs: Vec::new(),
     };
 
     let init = std::sync::Mutex::new(Some(app_state));
@@ -184,7 +199,6 @@ pub fn launch_stdin(
     .run()
     .map_err(|e| e.to_string().into())
 }
-
 /// Initialization data passed into the iced application.
 struct AppInit {
     markdown_src: String,
@@ -193,6 +207,8 @@ struct AppInit {
     theme: ThemeArg,
     title: String,
     network_enabled: bool,
+    /// Additional files to open as tabs once the primary document is loaded.
+    extra_tabs: Vec<PathBuf>,
 }
 
 impl AppInit {
@@ -206,6 +222,7 @@ impl AppInit {
             .unwrap_or(Path::new("."))
             .to_path_buf();
         let network_enabled = self.network_enabled;
+        let extra_tabs = self.extra_tabs;
 
         let mut app = MdrApp {
             raw_markdown: self.markdown_src,
@@ -254,8 +271,22 @@ impl AppInit {
 
         // Mermaid diagrams are rendered asynchronously by spawn_image_loads.
 
-        // Mark image URLs as pending and spawn loading tasks
-        let task = images::spawn_image_loads(&mut app);
+        // Mark image URLs as pending and spawn loading tasks.
+        let mut task = images::spawn_image_loads(&mut app);
+
+        // Open any additional files (from a multi-file command line) as tabs.
+        // Each emits an `OpenInNewTab` message, processed in order after boot,
+        // so files appear as tabs left-to-right in the order given.  Opening a
+        // tab makes it active, so a final `SwitchTab(0)` returns focus to the
+        // first (primary) document.
+        if !extra_tabs.is_empty() {
+            let mut tab_tasks: Vec<Task<Message>> = extra_tabs
+                .into_iter()
+                .map(|path| Task::done(Message::OpenInNewTab(path)))
+                .collect();
+            tab_tasks.push(Task::done(Message::SwitchTab(0)));
+            task = task.chain(Task::batch(tab_tasks));
+        }
 
         (app, task)
     }

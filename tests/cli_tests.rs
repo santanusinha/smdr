@@ -320,6 +320,67 @@ fn test_dry_run_produces_no_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Multiple file arguments (each opens in its own tab)
+// ---------------------------------------------------------------------------
+
+/// Creates a temp dir with `count` markdown files. Returns the guard plus the
+/// list of path strings.
+fn temp_md_files(count: usize) -> (TempDir, Vec<String>) {
+    let dir = TempDir::new().expect("tempdir");
+    let mut paths = Vec::with_capacity(count);
+    for i in 0..count {
+        let path = dir.path().join(format!("doc{i}.md"));
+        fs::write(&path, format!("# Doc {i}")).expect("write md");
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    (dir, paths)
+}
+
+#[test]
+fn test_multiple_files_accepted_by_clap() {
+    let (_dir, paths) = temp_md_files(3);
+    let out = smdr().arg("--dry-run").args(&paths).output().expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success()
+            && !stderr.contains("unexpected argument")
+            && !stderr.contains("unrecognized"),
+        "clap should accept multiple file args, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_multiple_files_with_flags_accepted() {
+    let (_dir, paths) = temp_md_files(2);
+    let out = smdr()
+        .args(["--dry-run", "--theme", "dark"])
+        .args(&paths)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+}
+
+#[test]
+fn test_multiple_files_one_missing_exits_nonzero() {
+    let (_dir, mut paths) = temp_md_files(2);
+    paths.push("/tmp/mdr_test_definitely_missing_abc123.md".to_string());
+    smdr().arg("--dry-run").args(&paths).assert().failure();
+}
+
+#[test]
+fn test_multiple_files_missing_reports_offending_path() {
+    let (_dir, mut paths) = temp_md_files(1);
+    let missing = "/tmp/mdr_test_definitely_missing_abc123.md".to_string();
+    paths.push(missing.clone());
+    smdr()
+        .arg("--dry-run")
+        .args(&paths)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(missing));
+}
+
+// ---------------------------------------------------------------------------
 // --list-themes
 // ---------------------------------------------------------------------------
 

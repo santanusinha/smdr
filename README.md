@@ -30,13 +30,19 @@ cargo install --path .
 ## Usage
 
 ```
-smdr [OPTIONS] [FILE]
+smdr [OPTIONS] [FILE]...
 ```
 
 Read from a file:
 
 ```sh
 smdr README.md
+```
+
+Open several files at once — each opens in its own tab:
+
+```sh
+smdr README.md CHANGELOG.md docs/guide.md
 ```
 
 Read from stdin:
@@ -50,6 +56,19 @@ Watch for changes (auto-reload):
 ```sh
 smdr -w README.md
 ```
+
+### Tabs
+
+When more than one document is open, a tab bar appears at the top. Opening
+further files — either by passing multiple paths on one command line or by
+running `smdr <file>` again while a window is already open — adds them as tabs
+in the existing window rather than spawning new windows.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-Tab` / `gt` | Next tab |
+| `Ctrl-Shift-Tab` / `gT` | Previous tab |
+| `Ctrl-W` | Close current tab |
 
 ### Options
 

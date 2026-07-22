@@ -16,8 +16,10 @@ use render::ViewerConfig;
 #[command(name = "smdr", version, about)]
 struct Cli {
     /// Path to the markdown file to view. Optional when reading from stdin pipe.
+    /// Paths to the markdown files to view. Multiple files each open in their
+    /// own tab. Optional when reading from stdin pipe.
     #[arg(value_name = "FILE")]
-    file: Option<PathBuf>,
+    files: Vec<PathBuf>,
 
     /// Watch the file for changes and auto-reload.
     #[arg(short, long)]
@@ -61,67 +63,11 @@ fn main() {
         network_enabled: !cli.no_network,
     };
 
-    // --dry-run: used by the test suite to verify CLI parsing and file
-    // validation without opening a GUI window.  Exit cleanly here.
-    if cli.dry_run {
-        return;
-    }
-
-    // Determine input source: file argument or stdin pipe
+    // Determine input source: file argument(s) or stdin pipe
     let stdin_is_pipe = !std::io::stdin().is_terminal();
 
-    match cli.file {
-        Some(file) => {
-            if !file.exists() {
-                eprintln!("Error: file not found: {}", file.display());
-                std::process::exit(1);
-            }
-
-            if !file.is_file() {
-                eprintln!("Error: not a file: {}", file.display());
-                std::process::exit(1);
-            }
-            if let Some(ext) = file.extension() {
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                if !matches!(ext_lower.as_str(), "md" | "markdown" | "mdown" | "mkd") {
-                    eprintln!(
-                        "Warning: {} doesn't look like a markdown file (extension: .{})",
-                        file.display(),
-                        ext_lower
-                    );
-                }
-            }
-
-            // Resolve to an absolute path so the receiving instance can open it
-            // regardless of its own working directory (it may have been
-            // daemonized with a different cwd).
-            let abs_path = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-            let path_str = abs_path.to_string_lossy().into_owned();
-
-            // If another instance is already running, hand off the path so it
-            // opens as a new tab, then exit without launching a second window.
-            if ipc::client_send(&path_str).is_ok() {
-                return;
-            }
-
-            // No running instance — become the first one.  Detach from the
-            // controlling terminal so the shell is not blocked, then launch the
-            // GUI (which also runs the IPC server to receive future paths).
-            //
-            // SAFETY: `daemonize` forks; it must run before any threads (the
-            // tokio runtime, iced's workers) are spawned.  We are still
-            // single-threaded here.
-            daemon::daemonize();
-
-            if let Err(e) = render::launch(&abs_path, &config) {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-
-            // Best-effort cleanup of the IPC socket on exit.
-            ipc::cleanup_socket();
-        }
-        None if stdin_is_pipe => {
+    if cli.files.is_empty() {
+        if stdin_is_pipe {
             use std::io::Read;
             let mut content = String::new();
             if let Err(e) = std::io::stdin().read_to_string(&mut content) {
@@ -136,11 +82,72 @@ fn main() {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
+            return;
         }
-        None => {
-            eprintln!("Error: no FILE argument and stdin is not a pipe");
-            eprintln!("Usage: smdr <FILE> or pipe markdown to smdr");
+        eprintln!("Error: no FILE argument and stdin is not a pipe");
+        eprintln!("Usage: smdr <FILE>... or pipe markdown to smdr");
+        std::process::exit(1);
+    }
+
+    // Validate every file and resolve to absolute paths so the receiving
+    // instance can open them regardless of its own working directory (it may
+    // have been daemonized with a different cwd).
+    let mut abs_paths: Vec<PathBuf> = Vec::with_capacity(cli.files.len());
+    for file in &cli.files {
+        if !file.exists() {
+            eprintln!("Error: file not found: {}", file.display());
             std::process::exit(1);
         }
+        if !file.is_file() {
+            eprintln!("Error: not a file: {}", file.display());
+            std::process::exit(1);
+        }
+        if let Some(ext) = file.extension() {
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            if !matches!(ext_lower.as_str(), "md" | "markdown" | "mdown" | "mkd") {
+                eprintln!(
+                    "Warning: {} doesn't look like a markdown file (extension: .{})",
+                    file.display(),
+                    ext_lower
+                );
+            }
+        }
+        let abs = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+        abs_paths.push(abs);
     }
+
+    // --dry-run: used by the test suite to verify CLI parsing and file
+    // validation without opening a GUI window.  Exit cleanly here, after
+    // validation but before any window or IPC hand-off.
+    if cli.dry_run {
+        return;
+    }
+
+    let path_strs: Vec<String> = abs_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    // If another instance is already running, hand off every path so each
+    // opens as a new tab, then exit without launching a second window.
+    if ipc::client_send(&path_strs).is_ok() {
+        return;
+    }
+
+    // No running instance — become the first one.  Detach from the controlling
+    // terminal so the shell is not blocked, then launch the GUI (which also
+    // runs the IPC server to receive future paths).  The first file is the
+    // primary document; any remaining files open as additional tabs at startup.
+    //
+    // SAFETY: `daemonize` forks; it must run before any threads (the tokio
+    // runtime, iced's workers) are spawned.  We are still single-threaded here.
+    daemon::daemonize();
+
+    if let Err(e) = render::launch(&abs_paths, &config) {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+
+    // Best-effort cleanup of the IPC socket on exit.
+    ipc::cleanup_socket();
 }
