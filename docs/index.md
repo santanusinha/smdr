@@ -40,7 +40,7 @@ See [Releases](https://github.com/santanusinha/smdr/releases).
 ## Usage
 
 ```
-smdr [OPTIONS] [FILE]
+smdr [OPTIONS] [FILE]...
 ```
 
 Read from a file:
@@ -49,11 +49,27 @@ Read from a file:
 smdr README.md
 ```
 
+Open several files at once — each opens in its own tab:
+
+```sh
+smdr README.md CHANGELOG.md docs/index.md
+```
+
 Read from stdin:
 
 ```sh
 cat README.md | smdr
 ```
+
+!!! tip "Tabs & single window"
+    smdr keeps everything in one window. Passing multiple files opens each in
+    its own tab, and running `smdr <file>` again while a window is already
+    open adds that file as a tab in the **existing** window instead of
+    launching a new one — the command returns immediately without blocking
+    your shell.
+
+    Opening a file that is already open doesn't create a duplicate: smdr
+    switches to its tab and reloads it from disk.
 
 !!! tip "Live file watching"
     Pass `-w` / `--watch` and smdr will monitor the file for changes and
@@ -128,6 +144,17 @@ cat README.md | smdr
 | `j` / `↓` | Next heading (when sidebar focused) |
 | `k` / `↑` | Previous heading (when sidebar focused) |
 | `Enter` | Jump to heading (when sidebar focused) |
+
+### Tabs
+
+When more than one document is open, a tab bar appears at the top. Each tab
+has a close (✕) button, and clicking a tab switches to it.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-Tab` / `gt` | Next tab |
+| `Ctrl-Shift-Tab` / `gT` | Previous tab |
+| `Ctrl-W` | Close current tab |
 
 ### File & clipboard
 

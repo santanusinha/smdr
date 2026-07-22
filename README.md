@@ -62,7 +62,9 @@ smdr -w README.md
 When more than one document is open, a tab bar appears at the top. Opening
 further files — either by passing multiple paths on one command line or by
 running `smdr <file>` again while a window is already open — adds them as tabs
-in the existing window rather than spawning new windows.
+in the existing window rather than spawning new windows. Re-opening a file that
+is already open switches to its tab and reloads it from disk instead of
+creating a duplicate.
 
 | Key | Action |
 |-----|--------|

@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Tabbed browsing** — documents now open as tabs within a single window.
+  A tab bar (with per-tab close buttons) appears whenever more than one
+  document is open. Switch tabs with `Ctrl-Tab` / `Ctrl-Shift-Tab` or the
+  vim-style `gt` / `gT`; close the current tab with `Ctrl-W`.
+- **Multiple files on the command line** — `smdr a.md b.md c.md` opens each
+  file in its own tab; the first file is the primary document and the rest
+  load as tabs at startup.
+- **Single-window hand-off** — running `smdr <file>` while a window is already
+  open sends the path to the running instance (over a per-user Unix socket)
+  so it opens as a new tab instead of spawning a second window. The launcher
+  process detaches from the terminal, so the shell is never blocked.
+- **Duplicate-file de-duplication** — opening a file that is already open
+  switches to its existing tab and reloads it from disk rather than creating
+  a duplicate tab.
+
+---
+
 ## [0.1.2] — 2026-06-26
 
 ### Added
