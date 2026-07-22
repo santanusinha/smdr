@@ -1,6 +1,6 @@
 [package]
 name = "smdr"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Simple Markdown Reader — a fast, native markdown viewer with vim-style navigation, live reload, and 22 themes"
 license = "MIT"

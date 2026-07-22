@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [0.1.3] — 2026-07-22
 
 ### Added
 - **Tabbed browsing** — documents now open as tabs within a single window.
