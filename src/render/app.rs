@@ -247,6 +247,8 @@ impl AppInit {
             last_scroll_y: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
+            tabs: Vec::new(),
+            active_tab: 0,
         };
         app.line_count = app.raw_markdown.lines().count();
 

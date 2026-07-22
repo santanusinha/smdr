@@ -18,6 +18,13 @@ use super::widget::MdrViewer;
 
 /// Build the main UI element tree.
 pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
+    // --- Tab bar (shown only when more than one tab is open) ---
+    let tab_bar: Option<Element<'_, Message>> = if app.tabs.is_empty() {
+        None
+    } else {
+        Some(build_tab_bar(app))
+    };
+
     let theme = app.active_theme.to_theme();
     let is_dark = theme.extended_palette().is_dark;
     let mut style = markdown::Style::from(&theme);
@@ -145,6 +152,10 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
     // Assemble the full layout
     let mut layout = column![];
 
+    if let Some(bar) = tab_bar {
+        layout = layout.push(bar);
+    }
+
     if let Some(bar) = search_bar {
         layout = layout.push(bar);
     }
@@ -164,6 +175,64 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
 
     layout = layout.push(status_bar);
     layout.into()
+}
+
+/// Build the tab bar (shown when more than one tab is open).
+///
+/// Tabs are rendered in visual-slot order.  The *active* document lives inline
+/// in [`MdrApp`] and occupies visual slot `active_tab`; every other slot is a
+/// background tab pulled from `app.tabs`.  A background tab at vector index `k`
+/// therefore appears at visual slot `k` when `k < active_tab` and `k + 1`
+/// otherwise.  The active tab is highlighted; each tab carries a close (✕)
+/// button.
+fn build_tab_bar(app: &MdrApp) -> Element<'_, Message> {
+    let mut tabs_row = row![].spacing(0);
+    let total = app.tabs.len() + 1;
+
+    for visual in 0..total {
+        let is_active = visual == app.active_tab;
+
+        // Resolve the label for this visual slot.
+        let label: String = if is_active {
+            app.file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "stdin".to_string())
+        } else {
+            let vec_idx = if visual < app.active_tab {
+                visual
+            } else {
+                visual - 1
+            };
+            app.tabs[vec_idx].label.clone()
+        };
+
+        let tab_btn = button(
+            row![
+                text(label).size(12),
+                button(text("✕").size(10))
+                    .on_press(Message::CloseTab(visual))
+                    .padding([0, 2])
+                    .style(button::text),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::SwitchTab(visual))
+        .padding([4, 10])
+        .style(if is_active {
+            button::primary
+        } else {
+            button::text
+        });
+
+        tabs_row = tabs_row.push(tab_btn);
+    }
+
+    container(tabs_row)
+        .width(Length::Fill)
+        .style(container::rounded_box)
+        .into()
 }
 
 /// Build the permanent bottom status bar.
@@ -252,6 +321,9 @@ pub(super) fn build_shortcuts_panel(app: &MdrApp) -> Element<'_, Message> {
         ("Cycle theme", "Ctrl-T", ""),
         ("Reload file", "Ctrl-R", ""),
         ("Copy document", "Ctrl-C", ""),
+        ("Next tab", "Ctrl-Tab", "gt"),
+        ("Previous tab", "Ctrl-Shift-Tab", "gT"),
+        ("Close tab", "Ctrl-W", ""),
         ("Show keymap", "", "?"),
         ("Exit", "", "qq / ZZ"),
         ("Close search / overlay", "Esc", ""),
@@ -326,7 +398,7 @@ pub(super) fn build_about_panel(app: &MdrApp) -> Element<'_, Message> {
         text("Simple Markdown Reader").size(12),
         text("").size(6),
         text("Built with iced + pulldown-cmark").size(12),
-        text("https://github.com/user/smdr").size(11),
+        text("https://github.com/santanusinha/smdr").size(11),
     ]
     .spacing(4)
     .padding(8);
@@ -369,10 +441,6 @@ pub(super) fn build_mermaid_modal(
     .align_y(Alignment::Center)
     .width(Length::Fill);
 
-    // For zooming SVG: iced's SVG widget doesn't support a direct zoom scale factor yet natively,
-    // but we can manipulate its absolute width and height while wrapping it in a scrollable,
-    // or we can use an image scale transform.
-    // Here we will use a scalable container inside a scrollable pane.
     let base_size = 1000.0;
     let scaled_size = base_size * zoom;
     let svg_view = scrollable(
@@ -380,7 +448,6 @@ pub(super) fn build_mermaid_modal(
             iced::widget::svg(handle)
                 .width(Length::Fixed(scaled_size))
                 .height(Length::Fixed(scaled_size))
-                // ContentFit::Contain inside a Fixed container will scale up the SVG
                 .content_fit(iced::ContentFit::Contain),
         )
         .width(Length::Fill)
@@ -414,9 +481,26 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     let is_mermaid_modal = matches!(app.overlay, Overlay::MermaidModal(_, _));
 
     let keys = keyboard::listen()
-        .with((search_mode, has_overlay, sidebar_focused, is_mermaid_modal))
+        .with((
+            search_mode,
+            has_overlay,
+            sidebar_focused,
+            is_mermaid_modal,
+            app.active_tab,
+            app.pending_key,
+        ))
         .filter_map(
-            |((search_mode, has_overlay, sidebar_focused, is_mermaid_modal), event)| {
+            |(
+                (
+                    search_mode,
+                    has_overlay,
+                    sidebar_focused,
+                    is_mermaid_modal,
+                    active_tab,
+                    pending_key,
+                ),
+                event,
+            )| {
                 let keyboard::Event::KeyPressed {
                     key,
                     modifiers,
@@ -532,7 +616,13 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                         keyboard::key::Named::End => Some(Message::ScrollToBottom),
                         keyboard::key::Named::Space => Some(Message::ScrollBy(360.0)),
                         keyboard::key::Named::Tab => {
-                            if modifiers.shift() {
+                            if modifiers.control() {
+                                if modifiers.shift() {
+                                    Some(Message::PrevTab)
+                                } else {
+                                    Some(Message::NextTab)
+                                }
+                            } else if modifiers.shift() {
                                 Some(Message::FocusPrevLink)
                             } else {
                                 Some(Message::FocusNextLink)
@@ -562,6 +652,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                                 "t" => Some(Message::CycleTheme),
                                 "r" => Some(Message::ReloadFile),
                                 "c" => Some(Message::CopyToClipboard),
+                                "w" => Some(Message::CloseTab(active_tab)),
                                 _ => None,
                             }
                         } else if modifiers.alt() {
@@ -577,6 +668,11 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                                 "/" => Some(Message::SearchOpen),
                                 "?" => Some(Message::ShowShortcuts),
                                 "o" => Some(Message::SidebarToggleFocus),
+                                // Vim-style tab switching: `gt` → next tab,
+                                // `gT` → previous tab (both wrap around).  These
+                                // fire only when `g` is the pending prefix key.
+                                "t" if pending_key == Some('g') => Some(Message::NextTab),
+                                "T" if pending_key == Some('g') => Some(Message::PrevTab),
                                 "g" | "G" | "q" | "Z" | "`" => {
                                     Some(Message::PendingKey(s.chars().next().unwrap()))
                                 }
@@ -621,5 +717,11 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
 
     let window_resize =
         iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size));
-    Subscription::batch([keys, mouse_events, window_resize, ticker])
+
+    // IPC: receive file paths sent by later smdr invocations and open them as
+    // new tabs.  Only the first instance binds the socket; later invocations
+    // hand off via `ipc::client_send` and exit before reaching the GUI.
+    let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
+
+    Subscription::batch([keys, mouse_events, window_resize, ticker, ipc])
 }

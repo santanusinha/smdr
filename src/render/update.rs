@@ -215,6 +215,108 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                 Task::none()
             }
         }
+        // --- Tab messages ---
+        //
+        // Tab model invariant: the *active* document lives inline in `MdrApp`
+        // and logically occupies visual slot `active_tab`.  `app.tabs` holds
+        // every *other* open document in visual order.  A background tab at
+        // visual slot `v` therefore maps to `tabs[v]` when `v < active_tab`
+        // and `tabs[v - 1]` when `v > active_tab`.
+        Message::OpenInNewTab(path) => {
+            // Snapshot the current (outgoing) tab and re-insert it at its own
+            // visual slot so ordering is preserved, then append the new tab at
+            // the end and make it active.
+            let old_active = app.active_tab;
+            let saved = app.save_current_tab();
+            app.tabs.insert(old_active, saved);
+            app.active_tab = app.tabs.len();
+            // Reset per-document UI state for the new tab.
+            app.search_mode = false;
+            app.search_query.clear();
+            app.search_query_lower.clear();
+            app.search_hits.clear();
+            app.current_hit = None;
+            app.overlay = Overlay::None;
+            app.focused_link = None;
+            images::load_file(app, &path)
+        }
+        Message::SwitchTab(index) => {
+            let total = app.tabs.len() + 1;
+            if index == app.active_tab || index >= total {
+                return Task::none();
+            }
+            // Put the outgoing tab back at its visual slot, producing a fully
+            // ordered `tabs` vector, then pull the target out of that vector.
+            let old_active = app.active_tab;
+            let saved = app.save_current_tab();
+            app.tabs.insert(old_active, saved);
+            let target = app.tabs.remove(index);
+            app.restore_tab(target);
+            app.active_tab = index;
+            Task::none()
+        }
+        Message::CloseTab(index) => {
+            let total = app.tabs.len() + 1;
+            if total == 1 {
+                // Only one tab open — closing it exits the app.
+                return iced::exit();
+            }
+            if index == app.active_tab {
+                // Closing the active tab: promote an adjacent background tab.
+                // Prefer the next tab (visual active_tab + 1 → tabs[active_tab]);
+                // if the active tab is the last one, promote the previous.
+                if app.active_tab < app.tabs.len() {
+                    let target = app.tabs.remove(app.active_tab);
+                    app.restore_tab(target);
+                    // active_tab stays: the promoted tab now occupies this slot.
+                } else {
+                    let target = app.tabs.remove(app.active_tab - 1);
+                    app.restore_tab(target);
+                    app.active_tab -= 1;
+                }
+            } else {
+                // Closing a background tab: map its visual slot to a vec index.
+                let vec_idx = if index < app.active_tab {
+                    index
+                } else {
+                    index - 1
+                };
+                if vec_idx < app.tabs.len() {
+                    app.tabs.remove(vec_idx);
+                }
+                // Removing a tab left of the active one shifts it one slot left.
+                if index < app.active_tab {
+                    app.active_tab -= 1;
+                }
+            }
+            Task::none()
+        }
+        Message::NextTab => {
+            app.pending_key = None;
+            let total = app.tabs.len() + 1; // background tabs + active
+            if total <= 1 {
+                return Task::none();
+            }
+            let next = (app.active_tab + 1) % total;
+            handle_message(app, Message::SwitchTab(next))
+        }
+        Message::PrevTab => {
+            app.pending_key = None;
+            let total = app.tabs.len() + 1;
+            if total <= 1 {
+                return Task::none();
+            }
+            let prev = if app.active_tab == 0 {
+                total - 1
+            } else {
+                app.active_tab - 1
+            };
+            handle_message(app, Message::SwitchTab(prev))
+        }
+        Message::IpcFileReceived(path) => {
+            // Open the received file path in a new tab.
+            handle_message(app, Message::OpenInNewTab(path))
+        }
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.
         _ => Task::none(),

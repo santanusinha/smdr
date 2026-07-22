@@ -124,8 +124,6 @@ pub(super) enum Message {
     CycleTheme,
     ShowShortcuts,
     ShowAbout,
-    // OpenMermaidModal is not used since we set the state directly in navigation, or wait, do we?
-    // We should delete it.
     CloseOverlay,
     SidebarToggleVisibility,
     SidebarToggleFocus,
@@ -155,6 +153,130 @@ pub(super) enum Message {
     PendingKey(char),
     /// Mermaid diagram rendered to SVG: (source_code, svg_bytes).
     MermaidRendered(String, Option<Vec<u8>>),
+    // --- Tab messages ---
+    /// Open a file in a new tab.
+    OpenInNewTab(PathBuf),
+    /// Switch to the tab at the given visual index.
+    SwitchTab(usize),
+    /// Close the tab at the given visual index.
+    CloseTab(usize),
+    /// Switch to the next tab.
+    NextTab,
+    /// Switch to the previous tab.
+    PrevTab,
+    /// A file path was received over IPC from another instance; open it
+    /// in a new tab.
+    IpcFileReceived(PathBuf),
+}
+
+// ---------------------------------------------------------------------------
+// Saved tab state
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the active document's state, saved when switching away from
+/// a tab and restored when switching back.
+///
+/// Only the fields that are document-specific are saved; UI state like
+/// `sidebar_open` and `active_theme` is shared across all tabs.
+#[derive(Debug)]
+pub(super) struct SavedTab {
+    pub(super) label: String,
+    pub(super) raw_markdown: String,
+    pub(super) line_count: usize,
+    pub(super) file_path: PathBuf,
+    pub(super) watcher_rx: Option<Receiver<()>>,
+    pub(super) nav_history: Vec<NavEntry>,
+    pub(super) nav_index: usize,
+    pub(super) current_scroll_y: f32,
+    pub(super) links: Vec<DocumentLink>,
+    pub(super) focused_link: Option<usize>,
+    pub(super) search_mode: bool,
+    pub(super) search_query: String,
+    pub(super) search_query_lower: String,
+    pub(super) search_hits: Vec<usize>,
+    pub(super) current_hit: Option<usize>,
+    pub(super) toc: Vec<TocEntry>,
+    pub(super) sidebar_selected: Option<usize>,
+    pub(super) image_cache: HashMap<String, ImageData>,
+    pub(super) image_pending: HashSet<String>,
+    pub(super) image_failed: HashSet<String>,
+    pub(super) mermaid_cache: HashMap<String, svg::Handle>,
+    pub(super) mermaid_pending: HashSet<String>,
+    pub(super) base_dir: PathBuf,
+    pub(super) pending_key: Option<char>,
+    pub(super) last_scroll_y: f32,
+}
+
+impl MdrApp {
+    /// Snapshot the current document state into a `SavedTab`.
+    pub(super) fn save_current_tab(&mut self) -> SavedTab {
+        SavedTab {
+            label: self
+                .file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "stdin".to_string()),
+            raw_markdown: self.raw_markdown.clone(),
+            line_count: self.line_count,
+            file_path: self.file_path.clone(),
+            watcher_rx: self.watcher_rx.take(),
+            nav_history: self.nav_history.clone(),
+            nav_index: self.nav_index,
+            current_scroll_y: self.current_scroll_y,
+            links: self.links.clone(),
+            focused_link: self.focused_link,
+            search_mode: self.search_mode,
+            search_query: self.search_query.clone(),
+            search_query_lower: self.search_query_lower.clone(),
+            search_hits: self.search_hits.clone(),
+            current_hit: self.current_hit,
+            toc: self.toc.clone(),
+            sidebar_selected: self.sidebar_selected,
+            image_cache: self.image_cache.clone(),
+            image_pending: self.image_pending.clone(),
+            image_failed: self.image_failed.clone(),
+            mermaid_cache: self.mermaid_cache.clone(),
+            mermaid_pending: self.mermaid_pending.clone(),
+            base_dir: self.base_dir.clone(),
+            pending_key: self.pending_key,
+            last_scroll_y: self.last_scroll_y,
+        }
+    }
+
+    /// Restore document state from a `SavedTab`.
+    pub(super) fn restore_tab(&mut self, tab: SavedTab) {
+        self.content = markdown::Content::parse(&tab.raw_markdown);
+        self.raw_markdown = tab.raw_markdown;
+        self.line_count = tab.line_count;
+        self.file_path = tab.file_path;
+        self.watcher_rx = tab.watcher_rx;
+        self.nav_history = tab.nav_history;
+        self.nav_index = tab.nav_index;
+        self.current_scroll_y = tab.current_scroll_y;
+        self.links = tab.links;
+        self.focused_link = tab.focused_link;
+        self.search_mode = tab.search_mode;
+        self.search_query = tab.search_query;
+        self.search_query_lower = tab.search_query_lower;
+        self.search_hits = tab.search_hits;
+        self.current_hit = tab.current_hit;
+        self.toc = tab.toc;
+        self.sidebar_selected = tab.sidebar_selected;
+        self.image_cache = tab.image_cache;
+        self.image_pending = tab.image_pending;
+        self.image_failed = tab.image_failed;
+        self.mermaid_cache = tab.mermaid_cache;
+        self.mermaid_pending = tab.mermaid_pending;
+        self.base_dir = tab.base_dir;
+        self.pending_key = tab.pending_key;
+        self.last_scroll_y = tab.last_scroll_y;
+        let label = self
+            .file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "stdin".to_string());
+        self.title = format!("smdr — {label}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,4 +347,9 @@ pub(super) struct MdrApp {
     pub(super) content_height: f32,
     /// Visible viewport height in pixels (updated on scroll events).
     pub(super) viewport_height: f32,
+    // --- Tab state ---
+    /// Saved background tabs.
+    pub(super) tabs: Vec<SavedTab>,
+    /// Index of the active tab (0 = first document).
+    pub(super) active_tab: usize,
 }

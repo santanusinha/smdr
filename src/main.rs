@@ -1,5 +1,7 @@
 //! smdr — Simple Markdown Reader
 
+mod daemon;
+mod ipc;
 mod render;
 
 use clap::Parser;
@@ -79,7 +81,6 @@ fn main() {
                 eprintln!("Error: not a file: {}", file.display());
                 std::process::exit(1);
             }
-
             if let Some(ext) = file.extension() {
                 let ext_lower = ext.to_string_lossy().to_lowercase();
                 if !matches!(ext_lower.as_str(), "md" | "markdown" | "mdown" | "mkd") {
@@ -91,10 +92,34 @@ fn main() {
                 }
             }
 
-            if let Err(e) = render::launch(&file, &config) {
+            // Resolve to an absolute path so the receiving instance can open it
+            // regardless of its own working directory (it may have been
+            // daemonized with a different cwd).
+            let abs_path = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+            let path_str = abs_path.to_string_lossy().into_owned();
+
+            // If another instance is already running, hand off the path so it
+            // opens as a new tab, then exit without launching a second window.
+            if ipc::client_send(&path_str).is_ok() {
+                return;
+            }
+
+            // No running instance — become the first one.  Detach from the
+            // controlling terminal so the shell is not blocked, then launch the
+            // GUI (which also runs the IPC server to receive future paths).
+            //
+            // SAFETY: `daemonize` forks; it must run before any threads (the
+            // tokio runtime, iced's workers) are spawned.  We are still
+            // single-threaded here.
+            daemon::daemonize();
+
+            if let Err(e) = render::launch(&abs_path, &config) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
+
+            // Best-effort cleanup of the IPC socket on exit.
+            ipc::cleanup_socket();
         }
         None if stdin_is_pipe => {
             use std::io::Read;
