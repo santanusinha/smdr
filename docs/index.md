@@ -182,16 +182,14 @@ it takes irreversible action.
 
 ### The `smdr-review` agent skill
 
-If you are using the [Sai](https://github.com/santanusinha/sai) agent framework,
-there is a ready-made skill that encapsulates this entire workflow.
+A ready-made skill file (`skills/smdr-review/SKILL.md`) is included in the
+[smdr repository](https://github.com/santanusinha/smdr). It is a plain
+Markdown document that any AI agent framework can load as a context file or
+skill definition — there is no framework-specific coupling.
 
-Install it by copying `SKILL.md` into your skills directory
-(`~/.config/sai/skills/smdr-review/SKILL.md`). The skill is available
-in the [smdr repository](https://github.com/santanusinha/smdr) under
-`skills/smdr-review/`.
-
-Once installed, the agent will automatically open smdr for human sign-off
-when it detects phrases like:
+Drop it into your agent's skill or context directory, point your agent at it,
+and it will automatically open smdr for human sign-off whenever it detects
+phrases like:
 
 - _"get feedback on this plan"_
 - _"let me review"_ / _"user review"_ / _"need sign-off"_
@@ -297,7 +295,6 @@ EOF
 
 smdr --review --annotations-in annotations.json --format md --out report.md plan.md
 ```
----
 
 ## Keymap
 
