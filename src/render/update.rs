@@ -392,7 +392,7 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             app.comment_draft.clear();
             // Prefill the composer with any existing comment on this line.
             if let Some(existing) = app.comments.iter().find(|c| c.line == line) {
-                app.comment_draft = existing.comment.clone().unwrap_or_default();
+                app.comment_draft = existing.comment.clone();
             }
             operation::focus(Id::new(super::state::COMMENT_INPUT_ID))
         }
@@ -409,10 +409,7 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                 if !text.is_empty() {
                     app.comments.push(smdr::annotate::Annotation {
                         line,
-                        end_line: None,
-                        kind: smdr::annotate::Kind::Note,
-                        comment: Some(text),
-                        value: None,
+                        comment: text,
                     });
                     app.comments.sort_by_key(|c| c.line);
                 }
@@ -432,12 +429,13 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             // `--format` (default diff). Output goes to `--out` (if set) or
             // stdout. Because the review window runs in the FOREGROUND (no
             // daemonize), stdout is a real terminal/pipe the caller can read.
-            //
-            // We `std::process::exit(0)` directly (rather than `iced::exit()`)
-            // so the caller can reliably distinguish a submit (exit 0, output
+            // Emit the completed review turn and exit. The envelope carries the
+            // comments authored in the gutter view, rendered in the chosen
+            // `--format` (default json). Output goes to `--out` (if set) or
+            // stdout. Because the review window runs in the FOREGROUND (no
             // present) from a window-close/cancel (exit 3, no stdout) — see
             // `launch_review` in app.rs.
-            let envelope = smdr::annotate::ReviewEnvelope::submitted(
+            let envelope = smdr::annotate::ReviewEnvelope::new(
                 app.file_path.to_string_lossy().to_string(),
                 app.comments.clone(),
             );

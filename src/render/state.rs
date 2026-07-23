@@ -228,8 +228,8 @@ pub(super) enum Message {
 // Comments authored in the source-gutter view are stored directly as
 // `annotate::Annotation` (the headless review model), so a completed turn
 // serializes straight through `annotate`'s json/annotated-md/diff renderers
-// with no bridging type. Gutter authoring currently produces `Kind::Note`
-// comments; the richer kinds (accept/reject/choice) remain available in the
+// with no bridging type. An annotation is just a 0-based line plus freeform
+// comment text — no op-types.
 // model for future UI.
 
 // ---------------------------------------------------------------------------

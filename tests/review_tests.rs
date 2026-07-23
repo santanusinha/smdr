@@ -18,11 +18,7 @@ fn fixture() -> (TempDir, String, String) {
         "# Title\nalpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n",
     )
     .unwrap();
-    fs::write(
-        &annot,
-        r#"[{"line":2,"kind":"reject","comment":"drop this"}]"#,
-    )
-    .unwrap();
+    fs::write(&annot, r#"[{"line":2,"comment":"drop this"}]"#).unwrap();
     (
         dir,
         draft.to_string_lossy().into_owned(),
@@ -45,9 +41,7 @@ fn review_diff_emits_insertion_only_transport() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--- a/"))
-        .stdout(predicate::str::contains(
-            "+<!-- smdr[reject]: drop this -->",
-        ))
+        .stdout(predicate::str::contains("+<!-- smdr: drop this -->"))
         .stdout(predicate::str::contains("do not git-apply"));
 }
 
@@ -67,7 +61,7 @@ fn review_md_emits_whole_doc_with_marker() {
         .success()
         .stdout(predicate::str::contains("alpha"))
         .stdout(predicate::str::contains("foxtrot"))
-        .stdout(predicate::str::contains("<!-- smdr[reject]: drop this -->"));
+        .stdout(predicate::str::contains("<!-- smdr: drop this -->"));
 }
 
 #[test]
@@ -85,7 +79,9 @@ fn review_json_emits_envelope() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"schema\": \"smdr.review/v1\""))
-        .stdout(predicate::str::contains("\"kind\": \"reject\""));
+        .stdout(predicate::str::contains("\"comment\": \"drop this\""))
+        // lean model: no op-type/kind field
+        .stdout(predicate::str::contains("\"kind\"").not());
 }
 
 #[test]
@@ -127,10 +123,23 @@ fn review_out_flag_writes_file_and_is_silent_on_stdout() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
-    assert!(fs::read_to_string(&out).unwrap().contains("smdr[reject]"));
+    assert!(fs::read_to_string(&out).unwrap().contains("<!-- smdr:"));
 }
 
 #[test]
 fn review_requires_file() {
     smdr().args(["--review"]).assert().failure();
+}
+
+#[test]
+fn review_default_format_is_json() {
+    let (_d, draft, annot) = fixture();
+    // No --format flag: the default is the structured JSON envelope.
+    smdr()
+        .args(["--review", &draft, "--annotations-in", &annot])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema\": \"smdr.review/v1\""))
+        .stdout(predicate::str::contains("\"comments\""))
+        .stdout(predicate::str::contains("\"comment\": \"drop this\""));
 }

@@ -120,7 +120,7 @@ fn run_review(
             match serde_json::from_str::<ReviewEnvelope>(&text) {
                 Ok(env) => env,
                 Err(_) => match serde_json::from_str::<Vec<Annotation>>(&text) {
-                    Ok(anns) => ReviewEnvelope::submitted(file.to_string_lossy(), anns),
+                    Ok(comments) => ReviewEnvelope::new(file.to_string_lossy(), comments),
                     Err(e) => {
                         eprintln!("Error parsing annotations JSON {}: {e}", path.display());
                         return 1;
@@ -129,9 +129,8 @@ fn run_review(
             }
         }
         // No annotations supplied → empty (still valid: "no comments" turn).
-        None => ReviewEnvelope::submitted(file.to_string_lossy(), Vec::new()),
+        None => ReviewEnvelope::new(file.to_string_lossy(), Vec::new()),
     };
-
     // Single dispatcher shared with the interactive GUI submit so both honour
     // `--format` identically.
     let rendered = render(&source, &env, format.into());
