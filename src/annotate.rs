@@ -48,6 +48,18 @@ pub enum OutputFormat {
     Diff,
 }
 
+impl OutputFormat {
+    /// File extension (without the dot) matching this serializer, used when
+    /// deriving an auto-generated output filename.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Md => "md",
+            OutputFormat::Json => "json",
+            OutputFormat::Diff => "diff",
+        }
+    }
+}
+
 impl ReviewEnvelope {
     /// Build an envelope for `file` carrying `comments`.
     pub fn new(file: impl Into<String>, comments: Vec<Annotation>) -> Self {

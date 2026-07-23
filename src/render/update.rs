@@ -348,8 +348,17 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         // --- Comment / review mode ---
         Message::ToggleCommentMode => {
             app.comment_mode = !app.comment_mode;
-            // Leaving comment mode discards any in-progress composer draft.
-            if !app.comment_mode {
+            if app.comment_mode {
+                // Activating comment mode on a file opened WITHOUT `--review`:
+                // restore any auto-saved draft for this document so previously
+                // authored (unsubmitted) comments reappear. `--review` launches
+                // already restore the draft in `AppInit::build`, so guard on an
+                // empty in-memory list to avoid clobbering the current review.
+                if app.comments.is_empty() {
+                    app.comments = smdr::draft::load(&app.file_path);
+                }
+            } else {
+                // Leaving comment mode discards any in-progress composer draft.
                 app.comment_target_line = None;
                 app.comment_draft.clear();
             }
@@ -429,12 +438,18 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         Message::ReviewSubmit => {
             // Emit the completed review turn and exit. The envelope carries the
             // comments authored in the gutter view, rendered in the chosen
-            // `--format` (default json). Output goes to `--out` (if set) or
-            // stdout. Because the review window runs in the FOREGROUND (no
-            // daemonize), stdout is a real terminal/pipe the caller can read.
+            // `--format` (default json).
+            //
+            // Output routing:
+            //   * `--out PATH` set    → write there (explicit wins always).
+            //   * foreground `--review` → stdout (a real terminal/pipe).
+            //   * daemonized viewer   → stdout is /dev/null, so writing there
+            //     would silently vanish. Fall back to a discoverable
+            //     timestamped file under the temp dir and log its path to the
+            //     (also /dev/null, but harmless) stderr.
             //
             // We `std::process::exit(0)` directly (rather than `iced::exit()`)
-            // so the caller can reliably distinguish a submit (exit 0, output
+            // so a foreground caller can distinguish a submit (exit 0, output
             // present) from a window-close/cancel (exit non-zero, no stdout).
             let envelope = smdr::annotate::ReviewEnvelope::new(
                 app.file_path.to_string_lossy().to_string(),
@@ -450,6 +465,22 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                         );
                         std::process::exit(1);
                     }
+                }
+                None if app.daemonized => {
+                    // stdout is detached (/dev/null) — persist to a temp file so
+                    // the review isn't lost.
+                    let out_path = smdr::draft::review_output_path(
+                        &app.file_path,
+                        app.review_format.extension(),
+                    );
+                    if let Err(e) = std::fs::write(&out_path, &rendered) {
+                        eprintln!(
+                            "smdr: could not write review output to {}: {e}",
+                            out_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                    eprintln!("smdr: review written to {}", out_path.display());
                 }
                 None => {
                     use std::io::Write;

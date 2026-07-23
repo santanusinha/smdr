@@ -46,6 +46,28 @@ pub fn draft_path(file: &Path) -> PathBuf {
         .join(format!("{}.json", hash_path(&canonical)))
 }
 
+/// Derive a timestamped output path for a submitted review turn under the temp
+/// dir: `<tmp>/<stem>-<unix_secs>.<ext>`.
+///
+/// Used when a review is submitted from a DAEMONIZED viewer whose stdout was
+/// redirected to `/dev/null` — writing the output to a discoverable file keeps
+/// it from vanishing. The stem comes from the document's file name (falling
+/// back to `review` for stdin/unnamed docs); `ext` matches the chosen output
+/// format (json/md/diff). The timestamp is whole seconds since the Unix epoch,
+/// so concurrent submits of the same file are unlikely to collide.
+pub fn review_output_path(file: &Path, ext: &str) -> PathBuf {
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "review".to_string());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("{stem}-{secs}.{ext}"))
+}
+
 /// Load a previously auto-saved draft for `file`.
 ///
 /// Returns an empty vector if no draft exists or the file is unreadable/corrupt
@@ -142,5 +164,33 @@ mod tests {
         assert!(load(&file).is_empty());
 
         let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn review_output_path_has_stem_timestamp_and_ext() {
+        let file = Path::new("/home/user/docs/report.md");
+        let p = review_output_path(file, "json");
+        let name = p.file_name().unwrap().to_string_lossy();
+        // <stem>-<digits>.<ext>
+        assert!(name.starts_with("report-"), "stem prefix: {name}");
+        assert!(name.ends_with(".json"), "ext suffix: {name}");
+        let ts = name.trim_start_matches("report-").trim_end_matches(".json");
+        assert!(
+            !ts.is_empty() && ts.chars().all(|c| c.is_ascii_digit()),
+            "timestamp is all digits: {ts}"
+        );
+        // Lands under the system temp dir.
+        assert!(p.starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn review_output_path_falls_back_to_review_stem() {
+        // A path with no usable file stem falls back to "review".
+        let p = review_output_path(Path::new("/"), "diff");
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("review-"), "fallback stem: {name}");
+        assert!(name.starts_with("review-"), "fallback stem: {name}");
+        assert!(name.ends_with(".diff"));
     }
 }

@@ -105,6 +105,7 @@ pub fn launch(
         review_out: config.review_out.clone(),
         review_format: config.review_format,
         ipc_enabled: config.ipc_enabled,
+        daemonized: config.daemonized,
     };
 
     // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
@@ -176,6 +177,7 @@ pub fn launch_stdin(
         review_out: config.review_out.clone(),
         review_format: config.review_format,
         ipc_enabled: config.ipc_enabled,
+        daemonized: config.daemonized,
     };
 
     let init = std::sync::Mutex::new(Some(app_state));
@@ -224,7 +226,11 @@ struct AppInit {
     /// Output serializer for a submitted review turn (mirrors `--format`).
     review_format: smdr::annotate::OutputFormat,
     /// Whether the single-instance IPC server runs for this app.
+    /// Whether the single-instance IPC server runs for this app.
     ipc_enabled: bool,
+    /// `true` when the process was daemonized (stdio → /dev/null); routes review
+    /// submit output to a timestamped temp file instead of stdout.
+    daemonized: bool,
 }
 
 impl AppInit {
@@ -299,10 +305,10 @@ impl AppInit {
             // reviewer who closed the window without submitting picks up where
             // they left off. Normal viewing starts with no comments.
             comments: restored_comments,
-            review_mode: self.review_mode,
             review_out: self.review_out,
             review_format: self.review_format,
             ipc_enabled: self.ipc_enabled,
+            daemonized: self.daemonized,
         };
         app.line_count = app.raw_markdown.lines().count();
 

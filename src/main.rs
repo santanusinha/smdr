@@ -184,7 +184,7 @@ fn main() {
     }
 
     let theme = cli.theme.unwrap_or(ThemeArg::System);
-    let config = ViewerConfig {
+    let mut config = ViewerConfig {
         theme,
         // true iff --theme / -t was explicitly provided on the command line.
         theme_explicit: cli.theme.is_some(),
@@ -200,6 +200,10 @@ fn main() {
         // run the IPC server (no tab hand-off, no shared socket). A normal
         // viewer does, so later invocations open as tabs.
         ipc_enabled: !cli.review,
+        // Set to true just before the normal viewer daemonizes (below). A
+        // daemonized process has stdout wired to /dev/null, so a review submit
+        // must fall back to a timestamped temp file rather than vanishing.
+        daemonized: false,
     };
 
     // Interactive review: open a SINGLE foreground window straight into review
@@ -311,6 +315,11 @@ fn main() {
     // SAFETY: `daemonize` forks; it must run before any threads (the tokio
     // runtime, iced's workers) are spawned.  We are still single-threaded here.
     daemon::daemonize();
+
+    // Past the fork: stdout/stderr now point at /dev/null, so a review submit
+    // from this process can't reach the caller. Flag it so ReviewSubmit writes
+    // to a discoverable timestamped file under the temp dir instead.
+    config.daemonized = true;
 
     if let Err(e) = render::launch(&abs_paths, &config) {
         eprintln!("Error: {e}");

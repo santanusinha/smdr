@@ -33,6 +33,10 @@ pub struct ViewerConfig {
     /// review mode so a review window is fully isolated (its own process, no
     /// tab hand-off, no socket contention with a normal viewer).
     pub ipc_enabled: bool,
+    /// `true` when this process was daemonized (double-forked, stdio wired to
+    /// `/dev/null`). A submit in this mode cannot reach stdout, so review output
+    /// is written to a timestamped file under the temp dir instead.
+    pub daemonized: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -435,10 +439,6 @@ pub(super) struct MdrApp {
     /// All line-anchored comments authored this session. Stored as review
     /// `Annotation`s so a completed turn serializes with no bridging type.
     pub(super) comments: Vec<Annotation>,
-    /// Whether the viewer was launched in review mode (`--review`). Gates the
-    /// "Submit review" affordance; comment authoring itself is always allowed.
-    pub(super) review_mode: bool,
-    /// Where a completed review turn is written; `None` means stdout.
     /// Where a completed review turn is written; `None` means stdout.
     pub(super) review_out: Option<PathBuf>,
     /// Output serializer for a submitted review turn (mirrors `--format`).
@@ -447,4 +447,8 @@ pub(super) struct MdrApp {
     /// review mode so a review window is fully isolated (its own process, no
     /// tab hand-off, no socket contention with a normal viewer).
     pub(super) ipc_enabled: bool,
+    /// `true` when this process was daemonized (stdio wired to `/dev/null`). A
+    /// review submit then can't reach stdout, so output is written to a
+    /// timestamped temp file instead of vanishing.
+    pub(super) daemonized: bool,
 }

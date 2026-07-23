@@ -295,10 +295,13 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
     // --- Optional inline composer for the targeted line ---
     let mut col = column![].height(Length::Fill);
 
-    // In review mode, a top toolbar lets the reviewer submit the turn: it
-    // serializes every gutter-authored comment into the review envelope and
-    // exits. Shown only when launched with `--review`.
-    if app.review_mode {
+    // A top toolbar lets the reviewer submit the turn: it serializes every
+    // gutter-authored comment into the review envelope and exits. Shown in the
+    // source/comment view regardless of how it was entered — an explicit
+    // `--review` launch (foreground, emits to stdout) OR an ad-hoc toggle in a
+    // normally-opened (daemonized) viewer, where submit writes to a timestamped
+    // temp file (see `update::ReviewSubmit`).
+    {
         let count = app.comments.len();
         let submit_btn = button(text(format!("Submit review ({count})")).size(12))
             .on_press(Message::ReviewSubmit)
