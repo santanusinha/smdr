@@ -667,6 +667,9 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
 
     let is_mermaid_modal = matches!(app.overlay, Overlay::MermaidModal(_, _));
 
+    // True when the line-comment composer is open, so Escape can cancel it.
+    let comment_active = app.comment_target_line.is_some();
+
     let keys = keyboard::listen()
         .with((
             search_mode,
@@ -675,6 +678,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
             is_mermaid_modal,
             app.active_tab,
             app.pending_key,
+            comment_active,
         ))
         .filter_map(
             |(
@@ -685,6 +689,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     is_mermaid_modal,
                     active_tab,
                     pending_key,
+                    comment_active,
                 ),
                 event,
             )| {
@@ -701,7 +706,8 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     return None;
                 };
 
-                // Escape always closes overlay, search, or sidebar focus
+                // Escape always closes overlay, search, sidebar focus, or an
+                // open comment composer.
                 if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
                     if has_overlay {
                         return Some(Message::CloseOverlay);
@@ -711,6 +717,9 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     }
                     if sidebar_focused {
                         return Some(Message::UnfocusSidebar);
+                    }
+                    if comment_active {
+                        return Some(Message::CommentCancel);
                     }
                     return None;
                 }
