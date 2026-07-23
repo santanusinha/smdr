@@ -7,11 +7,12 @@ use std::sync::mpsc::Receiver;
 use iced::Size;
 use iced::widget::{image as image_widget, markdown, scrollable, svg};
 
+use smdr::annotate::Annotation;
 use smdr::markdown::{DocumentLink, TocEntry};
 use smdr::theme::ThemeArg;
 
 /// Configuration passed to [`launch`](super::app::launch).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ViewerConfig {
     pub theme: ThemeArg,
     /// `true` when the user explicitly passed `--theme` on the command line.
@@ -20,6 +21,11 @@ pub struct ViewerConfig {
     pub watch: bool,
     /// Allow fetching remote images over the network.
     pub network_enabled: bool,
+    /// `true` when launched with `--review`; enables the "Submit review"
+    /// affordance in the source-gutter comment view.
+    pub review_mode: bool,
+    /// Where a completed review turn is written; `None` means stdout.
+    pub review_out: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,24 +193,21 @@ pub(super) enum Message {
     /// A raw `text_editor` action from the source view. Edit actions are
     /// ignored (read-only); selection/scroll/click actions are applied.
     SourceEditorAction(iced::widget::text_editor::Action),
+    /// Finish the review turn: emit the annotations envelope (to `--out` or
+    /// stdout) and exit.
+    ReviewSubmit,
 }
 
 // ---------------------------------------------------------------------------
-// Line-anchored comment
+// Line-anchored comments
 // ---------------------------------------------------------------------------
-
-/// A single comment anchored to a 0-based source line.
-///
-/// This is a deliberately minimal, in-memory stand-in. Persistence and the
-/// richer `Kind`/envelope model live on the `feature/annotation-review-mode`
-/// branch; when that merges, `line` maps 1:1 onto `annotate::Annotation.line`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LineComment {
-    /// 0-based source line the comment is anchored to.
-    pub(super) line: usize,
-    /// Freeform comment body.
-    pub(super) text: String,
-}
+//
+// Comments authored in the source-gutter view are stored directly as
+// `annotate::Annotation` (the headless review model), so a completed turn
+// serializes straight through `annotate`'s json/annotated-md/diff renderers
+// with no bridging type. Gutter authoring currently produces `Kind::Note`
+// comments; the richer kinds (accept/reject/choice) remain available in the
+// model for future UI.
 
 // ---------------------------------------------------------------------------
 // Saved tab state
@@ -406,5 +409,12 @@ pub(super) struct MdrApp {
     /// Current composer draft text.
     pub(super) comment_draft: String,
     /// All line-anchored comments authored this session (not yet persisted).
-    pub(super) comments: Vec<LineComment>,
+    /// All line-anchored comments authored this session. Stored as review
+    /// `Annotation`s so a completed turn serializes with no bridging type.
+    pub(super) comments: Vec<Annotation>,
+    /// Whether the viewer was launched in review mode (`--review`). Gates the
+    /// "Submit review" affordance; comment authoring itself is always allowed.
+    pub(super) review_mode: bool,
+    /// Where a completed review turn is written; `None` means stdout.
+    pub(super) review_out: Option<PathBuf>,
 }

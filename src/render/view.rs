@@ -302,7 +302,34 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         .height(Length::Fill);
 
     // --- Optional inline composer for the targeted line ---
-    let mut col = column![body].height(Length::Fill);
+    let mut col = column![].height(Length::Fill);
+
+    // In review mode, a top toolbar lets the reviewer submit the turn: it
+    // serializes every gutter-authored comment into the review envelope and
+    // exits. Shown only when launched with `--review`.
+    if app.review_mode {
+        let count = app.comments.len();
+        let submit_btn = button(text(format!("Submit review ({count})")).size(12))
+            .on_press(Message::ReviewSubmit)
+            .padding([4, 12])
+            .style(button::primary);
+        let toolbar = container(
+            row![
+                text("Review mode — click a gutter line to comment").size(12),
+                container(submit_btn)
+                    .width(Length::Fill)
+                    .align_x(Alignment::End),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        )
+        .padding([6, 10])
+        .width(Length::Fill)
+        .style(container::rounded_box);
+        col = col.push(toolbar);
+    }
+
+    col = col.push(body);
     if let Some(line) = target {
         col = col.push(build_comment_composer(app, line));
     }

@@ -11,6 +11,17 @@ use std::path::PathBuf;
 
 use render::ViewerConfig;
 
+/// Output serializer for `--review`. Mirrors §6 of the design doc.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReviewFormat {
+    /// Annotated markdown: whole doc + inline notes (self-contained).
+    Md,
+    /// Structured JSON envelope (for harnesses that branch on kind).
+    Json,
+    /// Unified-diff review transport (sparse; base-in-context). DEFAULT.
+    Diff,
+}
+
 /// Simple Markdown Reader.
 #[derive(Parser, Debug)]
 #[command(name = "smdr", version, about)]
@@ -41,6 +52,93 @@ struct Cli {
     /// Used by the test suite to verify CLI parsing without launching a GUI.
     #[arg(long, hide = true)]
     dry_run: bool,
+
+    /// Mark this file for review. Without --annotations-in, opens the normal
+    /// GUI viewer. With --annotations-in, runs a headless one-shot turn:
+    /// reads the annotations JSON, emits feedback to stdout (or --out), exits.
+    #[arg(long)]
+    review: bool,
+
+    /// Path to a JSON file of annotations to ingest for the review turn.
+    /// v1 stand-in for GUI authoring. Shape: a JSON array of Annotation, or a
+    /// full ReviewEnvelope.
+    #[arg(long, value_name = "PATH")]
+    annotations_in: Option<PathBuf>,
+
+    /// Where to write review output. Defaults to stdout.
+    #[arg(long, value_name = "PATH")]
+    out: Option<PathBuf>,
+
+    /// Output format for review mode.
+    #[arg(long, value_enum, default_value_t = ReviewFormat::Diff)]
+    format: ReviewFormat,
+}
+
+/// Run one headless review turn and return the process exit code.
+///
+/// Reads the draft from `file`, the annotations from `annotations_in` (a JSON
+/// array of `Annotation` OR a full `ReviewEnvelope`), renders the chosen
+/// `format`, and writes to `--out` (or stdout). NEVER writes to `file`.
+fn run_review(
+    file: &std::path::Path,
+    annotations_in: Option<&std::path::Path>,
+    out: Option<&std::path::Path>,
+    format: ReviewFormat,
+) -> i32 {
+    use smdr::annotate::{
+        Annotation, ReviewEnvelope, render_annotated_md, render_diff, render_json,
+    };
+
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {e}", file.display());
+            return 1;
+        }
+    };
+
+    // Build the envelope from the annotations file (v1 stand-in for the GUI).
+    let env: ReviewEnvelope = match annotations_in {
+        Some(path) => {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error reading {}: {e}", path.display());
+                    return 1;
+                }
+            };
+            // Accept EITHER a bare array of Annotation OR a full envelope.
+            match serde_json::from_str::<ReviewEnvelope>(&text) {
+                Ok(env) => env,
+                Err(_) => match serde_json::from_str::<Vec<Annotation>>(&text) {
+                    Ok(anns) => ReviewEnvelope::submitted(file.to_string_lossy(), anns),
+                    Err(e) => {
+                        eprintln!("Error parsing annotations JSON {}: {e}", path.display());
+                        return 1;
+                    }
+                },
+            }
+        }
+        // No annotations supplied → empty (still valid: "no comments" turn).
+        None => ReviewEnvelope::submitted(file.to_string_lossy(), Vec::new()),
+    };
+
+    let rendered = match format {
+        ReviewFormat::Md => render_annotated_md(&source, &env),
+        ReviewFormat::Json => render_json(&env),
+        ReviewFormat::Diff => render_diff(&source, &env),
+    };
+
+    match out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, rendered) {
+                eprintln!("Error writing {}: {e}", path.display());
+                return 1;
+            }
+        }
+        None => print!("{rendered}"),
+    }
+    0
 }
 
 fn main() {
@@ -54,6 +152,31 @@ fn main() {
         return;
     }
 
+    // --review + --annotations-in: headless one-shot turn; emit feedback and
+    // exit. Without --annotations-in the flag falls through to the GUI viewer
+    // (where comments are authored interactively in the source-gutter view).
+    if cli.review && cli.annotations_in.is_some() {
+        let Some(file) = cli.files.first() else {
+            eprintln!("Error: --review requires a FILE argument");
+            std::process::exit(2);
+        };
+        if !file.is_file() {
+            eprintln!("Error: not a file: {}", file.display());
+            std::process::exit(1);
+        }
+        if cli.dry_run {
+            // Parsing/validation only — used by tests, no output written.
+            return;
+        }
+        let code = run_review(
+            file,
+            cli.annotations_in.as_deref(),
+            cli.out.as_deref(),
+            cli.format,
+        );
+        std::process::exit(code);
+    }
+
     let theme = cli.theme.unwrap_or(ThemeArg::System);
     let config = ViewerConfig {
         theme,
@@ -61,6 +184,11 @@ fn main() {
         theme_explicit: cli.theme.is_some(),
         watch: cli.watch,
         network_enabled: !cli.no_network,
+        // --review (without --annotations-in) enables interactive review in the
+        // GUI: comments authored in the source-gutter view are submitted as an
+        // envelope to --out (or stdout) on ReviewSubmit.
+        review_mode: cli.review,
+        review_out: cli.out.clone(),
     };
 
     // Determine input source: file argument(s) or stdin pipe

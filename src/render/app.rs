@@ -101,6 +101,8 @@ pub fn launch(
         title,
         network_enabled: config.network_enabled,
         extra_tabs,
+        review_mode: config.review_mode,
+        review_out: config.review_out.clone(),
     };
 
     // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
@@ -168,6 +170,8 @@ pub fn launch_stdin(
         title,
         network_enabled: config.network_enabled,
         extra_tabs: Vec::new(),
+        review_mode: config.review_mode,
+        review_out: config.review_out.clone(),
     };
 
     let init = std::sync::Mutex::new(Some(app_state));
@@ -209,6 +213,10 @@ struct AppInit {
     network_enabled: bool,
     /// Additional files to open as tabs once the primary document is loaded.
     extra_tabs: Vec<PathBuf>,
+    /// `true` when launched with `--review`; enables the submit affordance.
+    review_mode: bool,
+    /// Where a completed review turn is written; `None` means stdout.
+    review_out: Option<PathBuf>,
 }
 
 impl AppInit {
@@ -272,6 +280,8 @@ impl AppInit {
             comment_target_line: None,
             comment_draft: String::new(),
             comments: Vec::new(),
+            review_mode: self.review_mode,
+            review_out: self.review_out,
         };
         app.line_count = app.raw_markdown.lines().count();
 

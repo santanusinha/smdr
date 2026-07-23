@@ -375,7 +375,7 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             app.comment_draft.clear();
             // Prefill the composer with any existing comment on this line.
             if let Some(existing) = app.comments.iter().find(|c| c.line == line) {
-                app.comment_draft = existing.text.clone();
+                app.comment_draft = existing.comment.clone().unwrap_or_default();
             }
             operation::focus(Id::new(super::state::COMMENT_INPUT_ID))
         }
@@ -390,7 +390,13 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                 // (an empty submission deletes the comment).
                 app.comments.retain(|c| c.line != line);
                 if !text.is_empty() {
-                    app.comments.push(super::state::LineComment { line, text });
+                    app.comments.push(smdr::annotate::Annotation {
+                        line,
+                        end_line: None,
+                        kind: smdr::annotate::Kind::Note,
+                        comment: Some(text),
+                        value: None,
+                    });
                     app.comments.sort_by_key(|c| c.line);
                 }
             }
@@ -402,6 +408,28 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             app.comment_target_line = None;
             app.comment_draft.clear();
             Task::none()
+        }
+        Message::ReviewSubmit => {
+            // Emit the completed review turn and exit. The envelope carries the
+            // annotations authored in the gutter view; output goes to `--out`
+            // (if set) or stdout, in the canonical JSON form.
+            let envelope = smdr::annotate::ReviewEnvelope::submitted(
+                app.file_path.to_string_lossy().to_string(),
+                app.comments.clone(),
+            );
+            let json = smdr::annotate::render_json(&envelope);
+            match &app.review_out {
+                Some(out_path) => {
+                    if let Err(e) = std::fs::write(out_path, &json) {
+                        eprintln!(
+                            "smdr: could not write review output to {}: {e}",
+                            out_path.display()
+                        );
+                    }
+                }
+                None => print!("{json}"),
+            }
+            iced::exit()
         }
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.
