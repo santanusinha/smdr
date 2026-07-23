@@ -356,12 +356,29 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             Task::none()
         }
         Message::SourceEditorAction(action) => {
-            // Read-only source view: apply navigation/selection/scroll actions
-            // but ignore edits so the buffer always mirrors `raw_markdown`.
+            // Read-only source view: apply navigation/selection actions but
+            // ignore edits so the buffer always mirrors `raw_markdown`.
+            //
+            // The editor is laid out at full content height so the *outer*
+            // scrollable drives scrolling (keeping gutter and text in lockstep).
+            // Because of that, the editor itself can't scroll, yet it still
+            // captures wheel events and emits `Action::Scroll` — which would be
+            // a no-op if performed on the editor. Redirect those to the outer
+            // scrollable so the mouse wheel works in review mode.
+            use iced::widget::text_editor::Action;
+            if let Action::Scroll { lines } = action {
+                return operation::scroll_by(
+                    Id::new(super::state::SOURCE_SCROLLABLE_ID),
+                    AbsoluteOffset {
+                        x: 0.0,
+                        y: lines as f32 * super::state::SOURCE_LINE_PX,
+                    },
+                );
+            }
             // A click doubles as line selection for commenting: the resulting
             // cursor line seeds the composer target.
             if !action.is_edit() {
-                let is_click = matches!(action, iced::widget::text_editor::Action::Click(_));
+                let is_click = matches!(action, Action::Click(_));
                 app.source_content.perform(action);
                 if is_click {
                     app.comment_target_line = Some(app.source_content.cursor().position.line);

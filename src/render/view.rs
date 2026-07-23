@@ -15,18 +15,9 @@ use smdr::theme::ThemeArg;
 use super::sidebar::build_sidebar;
 use super::state::{
     COMMENT_INPUT_ID, LINE_SCROLL, MdrApp, Message, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID,
-    SOURCE_SCROLLABLE_ID,
+    SOURCE_LINE_HEIGHT, SOURCE_LINE_PX, SOURCE_SCROLLABLE_ID, SOURCE_TEXT_SIZE, SOURCE_TOP_PAD,
 };
 use super::widget::MdrViewer;
-
-/// Monospace text size for the read-only source (comment) view.
-const SOURCE_TEXT_SIZE: f32 = 14.0;
-/// Line-height factor for the source view; also drives gutter row height so
-/// numbers align 1:1 with editor lines (including inside tables/code blocks).
-const SOURCE_LINE_HEIGHT: f32 = 1.4;
-/// Vertical padding above the first line, shared by editor and gutter so their
-/// baselines line up.
-const SOURCE_TOP_PAD: f32 = 8.0;
 
 /// Build the main UI element tree.
 pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
@@ -204,7 +195,7 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
 /// (or a line in the editor) opens the composer for that 0-based line.
 fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Message> {
     let is_dark = theme.extended_palette().is_dark;
-    let line_px = SOURCE_TEXT_SIZE * SOURCE_LINE_HEIGHT;
+    let line_px = SOURCE_LINE_PX;
     let line_count = app.source_content.line_count();
 
     // Editor height is pinned so the outer scrollable (not the editor) drives

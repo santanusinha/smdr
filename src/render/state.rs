@@ -44,6 +44,22 @@ pub(super) const SCROLLABLE_ID: &str = "smdr-content-scroll";
 /// Scrollable widget ID for the read-only source (comment) view.
 pub(super) const SOURCE_SCROLLABLE_ID: &str = "smdr-source-scroll";
 
+/// Monospace text size for the read-only source (comment) view.
+pub(super) const SOURCE_TEXT_SIZE: f32 = 14.0;
+
+/// Line-height factor for the source view; also drives gutter row height so
+/// numbers align 1:1 with editor lines (including inside tables/code blocks).
+pub(super) const SOURCE_LINE_HEIGHT: f32 = 1.4;
+
+/// Vertical padding above the first line, shared by editor and gutter so their
+/// baselines line up.
+pub(super) const SOURCE_TOP_PAD: f32 = 8.0;
+
+/// Rendered pixel height of a single source line (text size × line-height).
+/// Used to size gutter rows and to convert wheel-scroll `Action::Scroll`
+/// line deltas into pixel offsets for the outer scrollable.
+pub(super) const SOURCE_LINE_PX: f32 = SOURCE_TEXT_SIZE * SOURCE_LINE_HEIGHT;
+
 /// Text input widget ID for search bar focus.
 pub(super) const SEARCH_INPUT_ID: &str = "smdr-search-input";
 
