@@ -58,17 +58,14 @@ logical groups (e.g. "## Phase 1", "## Risks", "## Open questions").
 ### Step 2 — Open smdr in review mode
 
 ```bash
-FEEDBACK_JSON=$(smdr --review "$REVIEW_FILE")
-```
+### Step 2 — Open smdr in review mode
 
-Or persist the output to a file:
+smdr blocks until the user submits, then writes the JSON envelope to stdout
+and exits. Capture it directly:
 
 ```bash
-smdr --review --out /tmp/smdr-feedback.json "$REVIEW_FILE"
-FEEDBACK_JSON=$(cat /tmp/smdr-feedback.json)
+FEEDBACK_JSON=$(smdr --review "$REVIEW_FILE")
 ```
-
-### Step 3 — Parse and act on the feedback
 
 The output is a `ReviewEnvelope` JSON object:
 
@@ -118,7 +115,7 @@ for c in env["comments"]:
 ### Step 4 — Clean up
 
 ```bash
-rm -f "$REVIEW_FILE" /tmp/smdr-feedback.json
+rm -f "$REVIEW_FILE"
 ```
 
 ---
@@ -146,11 +143,8 @@ with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w") as f:
     f.write("\n".join(lines))
     path = f.name
 
-subprocess.run(["smdr", "--review", "--out", "/tmp/smdr-fb.json", path])
-feedback = json.loads(open("/tmp/smdr-fb.json").read())
+feedback = json.loads(subprocess.check_output(["smdr", "--review", path]))
 os.unlink(path)
-os.unlink("/tmp/smdr-fb.json")
-```
 
 ---
 
@@ -160,7 +154,7 @@ If you already have an annotations file and want to render a report without
 opening a window (e.g. in CI):
 
 ```bash
-smdr --review --annotations-in annotations.json --format md --out report.md plan.md
+smdr --review --annotations-in annotations.json --format md plan.md
 ```
 
 Formats: `json` (default), `md` (annotated Markdown), `diff` (unified diff).
