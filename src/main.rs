@@ -5,11 +5,33 @@ mod ipc;
 mod render;
 
 use clap::Parser;
+use smdr::annotate::OutputFormat;
 use smdr::theme::ThemeArg;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use render::ViewerConfig;
+
+/// Output serializer for `--review`. Mirrors §6 of the design doc.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReviewFormat {
+    /// Annotated markdown: whole doc + inline notes (self-contained).
+    Md,
+    /// Structured JSON envelope (for harnesses that branch on kind). DEFAULT.
+    Json,
+    /// Unified-diff review transport (sparse; base-in-context).
+    Diff,
+}
+
+impl From<ReviewFormat> for OutputFormat {
+    fn from(f: ReviewFormat) -> Self {
+        match f {
+            ReviewFormat::Md => OutputFormat::Md,
+            ReviewFormat::Json => OutputFormat::Json,
+            ReviewFormat::Diff => OutputFormat::Diff,
+        }
+    }
+}
 
 /// Simple Markdown Reader.
 #[derive(Parser, Debug)]
@@ -41,6 +63,98 @@ struct Cli {
     /// Used by the test suite to verify CLI parsing without launching a GUI.
     #[arg(long, hide = true)]
     dry_run: bool,
+
+    /// Mark this file for review. Without --annotations-in, opens the normal
+    /// GUI viewer. With --annotations-in, runs a headless one-shot turn:
+    /// reads the annotations JSON, emits feedback to stdout (or --out), exits.
+    #[arg(long)]
+    review: bool,
+
+    /// Path to a JSON file of annotations to ingest for the review turn.
+    /// v1 stand-in for GUI authoring. Shape: a JSON array of Annotation, or a
+    /// full ReviewEnvelope.
+    #[arg(long, value_name = "PATH")]
+    annotations_in: Option<PathBuf>,
+
+    /// Where to write review output. Defaults to stdout.
+    #[arg(long, value_name = "PATH")]
+    out: Option<PathBuf>,
+
+    /// Output format for review mode.
+    #[arg(long, value_enum, default_value_t = ReviewFormat::Json)]
+    format: ReviewFormat,
+}
+
+/// Validate that a path given to `--review` is a regular, accessible file.
+///
+/// Exits the process with a descriptive error on failure so both the headless
+/// and interactive `--review` paths share identical validation logic.
+fn require_review_file(file: &std::path::Path) {
+    if !file.is_file() {
+        eprintln!("Error: not a file: {}", file.display());
+        std::process::exit(1);
+    }
+}
+
+///
+/// Reads the draft from `file`, the annotations from `annotations_in` (a JSON
+/// array of `Annotation` OR a full `ReviewEnvelope`), renders the chosen
+/// `format`, and writes to `--out` (or stdout). NEVER writes to `file`.
+fn run_review(
+    file: &std::path::Path,
+    annotations_in: Option<&std::path::Path>,
+    out: Option<&std::path::Path>,
+    format: ReviewFormat,
+) -> i32 {
+    use smdr::annotate::{Annotation, ReviewEnvelope, render};
+
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {e}", file.display());
+            return 1;
+        }
+    };
+
+    // Build the envelope from the annotations file (v1 stand-in for the GUI).
+    let env: ReviewEnvelope = match annotations_in {
+        Some(path) => {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error reading {}: {e}", path.display());
+                    return 1;
+                }
+            };
+            // Accept EITHER a bare array of Annotation OR a full envelope.
+            match serde_json::from_str::<ReviewEnvelope>(&text) {
+                Ok(env) => env,
+                Err(_) => match serde_json::from_str::<Vec<Annotation>>(&text) {
+                    Ok(comments) => ReviewEnvelope::new(file.to_string_lossy(), comments),
+                    Err(e) => {
+                        eprintln!("Error parsing annotations JSON {}: {e}", path.display());
+                        return 1;
+                    }
+                },
+            }
+        }
+        // No annotations supplied → empty (still valid: "no comments" turn).
+        None => ReviewEnvelope::new(file.to_string_lossy(), Vec::new()),
+    };
+    // Single dispatcher shared with the interactive GUI submit so both honour
+    // `--format` identically.
+    let rendered = render(&source, &env, format.into());
+
+    match out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, rendered) {
+                eprintln!("Error writing {}: {e}", path.display());
+                return 1;
+            }
+        }
+        None => print!("{rendered}"),
+    }
+    0
 }
 
 fn main() {
@@ -54,14 +168,72 @@ fn main() {
         return;
     }
 
+    // --review + --annotations-in: headless one-shot turn; emit feedback and
+    // exit. Without --annotations-in the flag falls through to the GUI viewer
+    // (where comments are authored interactively in the source-gutter view).
+    if cli.review && cli.annotations_in.is_some() {
+        let Some(file) = cli.files.first() else {
+            eprintln!("Error: --review requires a FILE argument");
+            std::process::exit(2);
+        };
+        require_review_file(file);
+        if cli.dry_run {
+            return;
+        }
+        let code = run_review(
+            file,
+            cli.annotations_in.as_deref(),
+            cli.out.as_deref(),
+            cli.format,
+        );
+        std::process::exit(code);
+    }
+
     let theme = cli.theme.unwrap_or(ThemeArg::System);
-    let config = ViewerConfig {
+    let mut config = ViewerConfig {
         theme,
         // true iff --theme / -t was explicitly provided on the command line.
         theme_explicit: cli.theme.is_some(),
         watch: cli.watch,
         network_enabled: !cli.no_network,
+        // --review (without --annotations-in) enables interactive review in the
+        // GUI: comments authored in the source-gutter view are submitted as an
+        // envelope to --out (or stdout) on ReviewSubmit.
+        review_mode: cli.review,
+        review_out: cli.out.clone(),
+        review_format: cli.format.into(),
+        // A review window is a one-shot, self-contained process: it does NOT
+        // run the IPC server (no tab hand-off, no shared socket). A normal
+        // viewer does, so later invocations open as tabs.
+        ipc_enabled: !cli.review,
+        // Set to true just before the normal viewer daemonizes (below). A
+        // daemonized process has stdout wired to /dev/null, so a review submit
+        // must fall back to a timestamped temp file rather than vanishing.
+        daemonized: false,
     };
+
+    // Interactive review: open a SINGLE foreground window straight into review
+    // mode. Unlike the normal viewer we deliberately do NOT daemonize — the
+    // double-fork redirects stdout/stderr to /dev/null, which would silently
+    // swallow the review output emitted on ReviewSubmit. Running in the
+    // foreground keeps stdout wired to the caller's terminal/pipe so the
+    // diffed (or --format) output is delivered on submit.
+    if cli.review {
+        let Some(file) = cli.files.first() else {
+            eprintln!("Error: --review requires a FILE argument");
+            std::process::exit(2);
+        };
+        require_review_file(file);
+        if cli.dry_run {
+            return;
+        }
+        let abs = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+        if let Err(e) = render::launch(&[abs], &config) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Determine input source: file argument(s) or stdin pipe
     let stdin_is_pipe = !std::io::stdin().is_terminal();
@@ -142,6 +314,11 @@ fn main() {
     // SAFETY: `daemonize` forks; it must run before any threads (the tokio
     // runtime, iced's workers) are spawned.  We are still single-threaded here.
     daemon::daemonize();
+
+    // Past the fork: stdout/stderr now point at /dev/null, so a review submit
+    // from this process can't reach the caller. Flag it so ReviewSubmit writes
+    // to a discoverable timestamped file under the temp dir instead.
+    config.daemonized = true;
 
     if let Err(e) = render::launch(&abs_paths, &config) {
         eprintln!("Error: {e}");

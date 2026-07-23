@@ -7,11 +7,12 @@ use std::sync::mpsc::Receiver;
 use iced::Size;
 use iced::widget::{image as image_widget, markdown, scrollable, svg};
 
+use smdr::annotate::{Annotation, OutputFormat};
 use smdr::markdown::{DocumentLink, TocEntry};
 use smdr::theme::ThemeArg;
 
 /// Configuration passed to [`launch`](super::app::launch).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ViewerConfig {
     pub theme: ThemeArg,
     /// `true` when the user explicitly passed `--theme` on the command line.
@@ -20,6 +21,21 @@ pub struct ViewerConfig {
     pub watch: bool,
     /// Allow fetching remote images over the network.
     pub network_enabled: bool,
+    /// `true` when launched with `--review`; enables the "Submit review"
+    /// affordance in the source-gutter comment view.
+    pub review_mode: bool,
+    /// Where a completed review turn is written; `None` means stdout.
+    pub review_out: Option<PathBuf>,
+    /// Output serializer for a submitted review turn (mirrors `--format`).
+    pub review_format: OutputFormat,
+    /// Whether the single-instance IPC server runs for this app. Disabled in
+    /// review mode so a review window is fully isolated (its own process, no
+    /// tab hand-off, no socket contention with a normal viewer).
+    pub ipc_enabled: bool,
+    /// `true` when this process was daemonized (double-forked, stdio wired to
+    /// `/dev/null`). A submit in this mode cannot reach stdout, so review output
+    /// is written to a timestamped file under the temp dir instead.
+    pub daemonized: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -35,8 +51,30 @@ pub(super) const MAX_IMAGE_WIDTH: f32 = 800.0;
 /// Scrollable widget ID for programmatic scrolling.
 pub(super) const SCROLLABLE_ID: &str = "smdr-content-scroll";
 
+/// Scrollable widget ID for the read-only source (comment) view.
+pub(super) const SOURCE_SCROLLABLE_ID: &str = "smdr-source-scroll";
+
+/// Monospace text size for the read-only source (comment) view.
+pub(super) const SOURCE_TEXT_SIZE: f32 = 14.0;
+
+/// Line-height factor for the source view; also drives gutter row height so
+/// numbers align 1:1 with editor lines (including inside tables/code blocks).
+pub(super) const SOURCE_LINE_HEIGHT: f32 = 1.4;
+
+/// Vertical padding above the first line, shared by editor and gutter so their
+/// baselines line up.
+pub(super) const SOURCE_TOP_PAD: f32 = 8.0;
+
+/// Rendered pixel height of a single source line (text size × line-height).
+/// Used to size gutter rows and to convert wheel-scroll `Action::Scroll`
+/// line deltas into pixel offsets for the outer scrollable.
+pub(super) const SOURCE_LINE_PX: f32 = SOURCE_TEXT_SIZE * SOURCE_LINE_HEIGHT;
+
 /// Text input widget ID for search bar focus.
 pub(super) const SEARCH_INPUT_ID: &str = "smdr-search-input";
+
+/// Text input widget ID for the line-comment composer.
+pub(super) const COMMENT_INPUT_ID: &str = "smdr-comment-input";
 
 /// Scrollable widget ID for sidebar programmatic scrolling.
 pub(super) const SIDEBAR_SCROLLABLE_ID: &str = "smdr-sidebar-scroll";
@@ -167,7 +205,34 @@ pub(super) enum Message {
     /// A file path was received over IPC from another instance; open it
     /// in a new tab.
     IpcFileReceived(PathBuf),
+    // --- Comment / review mode (line-anchored comments) ---
+    /// Toggle the read-only, line-numbered source view used for commenting.
+    ToggleCommentMode,
+    /// A gutter line number was clicked; open the composer for that 0-based line.
+    GutterLineClicked(usize),
+    /// The comment composer text changed.
+    CommentDraftChanged(String),
+    /// Confirm the current composer draft, attaching it to the target line.
+    CommentSubmit,
+    /// Discard the current composer draft without saving.
+    CommentCancel,
+    /// A raw `text_editor` action from the source view. Edit actions are
+    /// ignored (read-only); selection/scroll/click actions are applied.
+    SourceEditorAction(iced::widget::text_editor::Action),
+    /// Finish the review turn: emit the annotations envelope (to `--out` or
+    /// stdout) and exit.
+    ReviewSubmit,
 }
+
+// ---------------------------------------------------------------------------
+// Line-anchored comments
+// ---------------------------------------------------------------------------
+//
+// Comments authored in the source-gutter view are stored directly as
+// `annotate::Annotation` (the headless review model), so a completed turn
+// serializes straight through `annotate`'s json/annotated-md/diff renderers
+// with no bridging type. An annotation is just a 0-based line plus freeform
+// comment text — no op-types.
 
 // ---------------------------------------------------------------------------
 // Saved tab state
@@ -246,6 +311,12 @@ impl MdrApp {
     /// Restore document state from a `SavedTab`.
     pub(super) fn restore_tab(&mut self, tab: SavedTab) {
         self.content = markdown::Content::parse(&tab.raw_markdown);
+        self.source_content = iced::widget::text_editor::Content::with_text(&tab.raw_markdown);
+        // Reset the composer for the incoming document; comment mode itself
+        // (the view toggle) is shared UI state and intentionally preserved.
+        self.comment_target_line = None;
+        self.comment_draft.clear();
+        self.comments.clear();
         self.raw_markdown = tab.raw_markdown;
         self.line_count = tab.line_count;
         self.file_path = tab.file_path;
@@ -352,4 +423,29 @@ pub(super) struct MdrApp {
     pub(super) tabs: Vec<SavedTab>,
     /// Index of the active tab (0 = first document).
     pub(super) active_tab: usize,
+    // --- Comment / review mode ---
+    /// Whether the read-only, line-numbered source view is active.
+    pub(super) comment_mode: bool,
+    /// Read-only editor content mirroring `raw_markdown`, rebuilt on load.
+    /// Wrapped so the line-oriented `text_editor` can render/select it.
+    pub(super) source_content: iced::widget::text_editor::Content,
+    /// Line the composer is currently open for (0-based), or `None`.
+    pub(super) comment_target_line: Option<usize>,
+    /// Current composer draft text.
+    pub(super) comment_draft: String,
+    /// All line-anchored comments authored this session. Stored as review
+    /// `Annotation`s so a completed turn serializes with no bridging type.
+    pub(super) comments: Vec<Annotation>,
+    /// Where a completed review turn is written; `None` means stdout.
+    pub(super) review_out: Option<PathBuf>,
+    /// Output serializer for a submitted review turn (mirrors `--format`).
+    pub(super) review_format: OutputFormat,
+    /// Whether the single-instance IPC server runs for this app. Disabled in
+    /// review mode so a review window is fully isolated (its own process, no
+    /// tab hand-off, no socket contention with a normal viewer).
+    pub(super) ipc_enabled: bool,
+    /// `true` when this process was daemonized (stdio wired to `/dev/null`). A
+    /// review submit then can't reach stdout, so output is written to a
+    /// timestamped temp file instead of vanishing.
+    pub(super) daemonized: bool,
 }

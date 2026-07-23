@@ -6,15 +6,39 @@ use iced::keyboard;
 use iced::mouse;
 use iced::widget::{
     Id, button, column, container, markdown, mouse_area, pick_list, row, rule, scrollable, text,
-    text_input,
+    text_editor, text_input,
 };
-use iced::{Alignment, Background, Color, Element, Event, Length, Pixels, Subscription};
+use iced::{Alignment, Background, Color, Element, Event, Font, Length, Pixels, Subscription};
 
 use smdr::theme::ThemeArg;
 
 use super::sidebar::build_sidebar;
-use super::state::{LINE_SCROLL, MdrApp, Message, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID};
+use super::state::{
+    COMMENT_INPUT_ID, LINE_SCROLL, MdrApp, Message, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID,
+    SOURCE_LINE_HEIGHT, SOURCE_LINE_PX, SOURCE_SCROLLABLE_ID, SOURCE_TEXT_SIZE, SOURCE_TOP_PAD,
+};
 use super::widget::MdrViewer;
+
+// ---------------------------------------------------------------------------
+// Gutter color constants (dark / light variants)
+// ---------------------------------------------------------------------------
+
+/// Gutter background color (dark theme).
+const GUTTER_BG_DARK: Color = Color::from_rgb(0.10, 0.11, 0.13);
+/// Gutter background color (light theme).
+const GUTTER_BG_LIGHT: Color = Color::from_rgb(0.96, 0.97, 0.98);
+/// Gutter comment-marker bullet color (dark theme).
+const MARKER_COLOR_DARK: Color = Color::from_rgb(0.45, 0.70, 1.0);
+/// Gutter comment-marker bullet color (light theme).
+const MARKER_COLOR_LIGHT: Color = Color::from_rgb(0.15, 0.40, 0.85);
+/// Gutter line-number text color (dark theme).
+const LINE_NUM_COLOR_DARK: Color = Color::from_rgb(0.55, 0.58, 0.65);
+/// Gutter line-number text color (light theme).
+const LINE_NUM_COLOR_LIGHT: Color = Color::from_rgb(0.50, 0.52, 0.58);
+/// Gutter active-row highlight color (dark theme).
+const ROW_HL_DARK: Color = Color::from_rgb(0.20, 0.24, 0.32);
+/// Gutter active-row highlight color (light theme).
+const ROW_HL_LIGHT: Color = Color::from_rgb(0.85, 0.90, 0.98);
 
 /// Build the main UI element tree.
 pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
@@ -68,16 +92,21 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
     let md_view: Element<'_, Message> =
         markdown::view_with(app.content.items(), settings, &viewer).map(Message::LinkClicked);
 
-    let content_area = scrollable(
-        container(md_view)
-            .padding(20)
-            .max_width(860)
-            .center_x(Length::Fill),
-    )
-    .id(Id::new(SCROLLABLE_ID))
-    .on_scroll(Message::Scrolled)
-    .width(Length::Fill)
-    .height(Length::Fill);
+    let content_area: Element<'_, Message> = if app.comment_mode {
+        build_source_view(app, &theme)
+    } else {
+        scrollable(
+            container(md_view)
+                .padding(20)
+                .max_width(860)
+                .center_x(Length::Fill),
+        )
+        .id(Id::new(SCROLLABLE_ID))
+        .on_scroll(Message::Scrolled)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    };
 
     // --- Search bar (shown above content when in search mode) ---
     let search_bar: Option<Element<'_, Message>> = if app.search_mode {
@@ -146,7 +175,7 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
             .height(Length::Fill)
             .into()
     } else {
-        content_area.into()
+        content_area
     };
 
     // Assemble the full layout
@@ -175,6 +204,203 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
 
     layout = layout.push(status_bar);
     layout.into()
+}
+
+/// Build the read-only, line-numbered source view used for commenting.
+///
+/// The markdown *source* is shown in a read-only [`text_editor`] (edit actions
+/// are dropped in [`update`](super::update)).  Because every source line maps to
+/// exactly one editor line, a sibling gutter column of clickable line numbers
+/// stays aligned even inside tables, lists, and fenced code blocks — which is
+/// impossible with the flowed, rendered markdown view.  Clicking a gutter line
+/// (or a line in the editor) opens the composer for that 0-based line.
+fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Message> {
+    let is_dark = theme.extended_palette().is_dark;
+    let line_count = app.source_content.line_count();
+
+    let toolbar = build_review_toolbar(app);
+    let body = build_source_body(app, is_dark, line_count);
+
+    let mut col = column![toolbar, body].height(Length::Fill);
+    if let Some(line) = app.comment_target_line {
+        col = col.push(build_comment_composer(app, line));
+    }
+
+    col.into()
+}
+
+/// Build the highlighted read-only editor + gutter column, wrapped in a
+/// scrollable.  Pinning the editor to its full content height lets the outer
+/// scrollable drive scrolling, keeping gutter and text in lockstep.
+fn build_source_body<'a>(
+    app: &'a MdrApp,
+    is_dark: bool,
+    line_count: usize,
+) -> Element<'a, Message> {
+    // Editor height is pinned so the outer scrollable (not the editor) drives
+    // scrolling, keeping the gutter and text in lockstep.
+    let editor_height = line_count as f32 * SOURCE_LINE_PX + 2.0 * SOURCE_TOP_PAD;
+
+    let hl_theme = if is_dark {
+        iced::highlighter::Theme::Base16Ocean
+    } else {
+        iced::highlighter::Theme::InspiredGitHub
+    };
+
+    let editor = text_editor(&app.source_content)
+        .on_action(Message::SourceEditorAction)
+        .font(Font::MONOSPACE)
+        .size(SOURCE_TEXT_SIZE)
+        .line_height(SOURCE_LINE_HEIGHT)
+        .padding([SOURCE_TOP_PAD, 8.0])
+        .wrapping(text::Wrapping::None)
+        .highlight("markdown", hl_theme)
+        .height(Length::Fixed(editor_height));
+
+    let gutter_col = build_gutter(app, is_dark, line_count);
+
+    scrollable(row![gutter_col, editor].width(Length::Fill))
+        .id(Id::new(SOURCE_SCROLLABLE_ID))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Build the line-number gutter: one clickable row per source line.
+///
+/// A `HashSet` of commented lines is built once before the loop to keep the
+/// per-row lookup O(1) rather than O(C) (C = comment count).
+fn build_gutter<'a>(app: &'a MdrApp, is_dark: bool, line_count: usize) -> Element<'a, Message> {
+    let commented: std::collections::HashSet<usize> = app.comments.iter().map(|c| c.line).collect();
+    let target = app.comment_target_line;
+    let mut gutter = column![].width(Length::Fixed(56.0));
+
+    for i in 0..line_count {
+        let has_comment = commented.contains(&i);
+        let is_target = target == Some(i);
+
+        // A leading marker column keeps the numbers right-aligned while showing
+        // a bullet on commented lines.
+        let marker = if has_comment { "●" } else { " " };
+        let label = row![
+            text(marker).size(SOURCE_TEXT_SIZE - 2.0).color(if is_dark {
+                MARKER_COLOR_DARK
+            } else {
+                MARKER_COLOR_LIGHT
+            }),
+            container(
+                text(format!("{}", i + 1))
+                    .size(SOURCE_TEXT_SIZE - 2.0)
+                    .color(if is_dark {
+                        LINE_NUM_COLOR_DARK
+                    } else {
+                        LINE_NUM_COLOR_LIGHT
+                    }),
+            )
+            .width(Length::Fill)
+            .align_x(Alignment::End),
+        ]
+        .spacing(3);
+
+        let row_bg = if is_target {
+            Some(if is_dark { ROW_HL_DARK } else { ROW_HL_LIGHT })
+        } else {
+            None
+        };
+
+        let cell = mouse_area(
+            container(label)
+                .width(Length::Fill)
+                .height(Length::Fixed(SOURCE_LINE_PX))
+                .padding([0, 6])
+                .align_y(Alignment::Center)
+                .style(move |_t: &iced::Theme| container::Style {
+                    background: row_bg.map(Background::Color),
+                    ..container::Style::default()
+                }),
+        )
+        .interaction(mouse::Interaction::Pointer)
+        .on_press(Message::GutterLineClicked(i));
+
+        gutter = gutter.push(cell);
+    }
+
+    container(gutter)
+        .padding([SOURCE_TOP_PAD, 0.0])
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(Background::Color(if is_dark {
+                GUTTER_BG_DARK
+            } else {
+                GUTTER_BG_LIGHT
+            })),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Build the review toolbar shown at the top of the source view.
+///
+/// The toolbar shows a hint label and a submit button that serializes every
+/// gutter-authored comment into the review envelope and exits. It is visible
+/// regardless of how the source view was entered — an explicit `--review`
+/// launch (foreground, emits to stdout) OR an ad-hoc toggle in a
+/// normally-opened (daemonized) viewer, where submit writes to a timestamped
+/// temp file (see `update::ReviewSubmit`).
+fn build_review_toolbar(app: &MdrApp) -> Element<'_, Message> {
+    let count = app.comments.len();
+    let submit_btn = button(text(format!("Submit review ({count})")).size(12))
+        .on_press(Message::ReviewSubmit)
+        .padding([4, 12])
+        .style(button::primary);
+    container(
+        row![
+            text("Review mode — click a gutter line to comment").size(12),
+            container(submit_btn)
+                .width(Length::Fill)
+                .align_x(Alignment::End),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    )
+    .padding([6, 10])
+    .width(Length::Fill)
+    .style(container::rounded_box)
+    .into()
+}
+
+/// Build the line-comment composer shown at the bottom of the source view.
+fn build_comment_composer(app: &MdrApp, line: usize) -> Element<'_, Message> {
+    let header = text(format!("Comment on line {}", line + 1)).size(12);
+    let input = text_input("Write a comment…", &app.comment_draft)
+        .id(Id::new(COMMENT_INPUT_ID))
+        .on_input(Message::CommentDraftChanged)
+        .on_submit(Message::CommentSubmit)
+        .padding(6)
+        .size(13)
+        .width(Length::Fill);
+
+    let save_btn = button(text("Save").size(12))
+        .on_press(Message::CommentSubmit)
+        .padding([4, 10])
+        .style(button::primary);
+    let cancel_btn = button(text("Cancel").size(12))
+        .on_press(Message::CommentCancel)
+        .padding([4, 10])
+        .style(button::text);
+
+    container(
+        column![
+            header,
+            row![input, save_btn, cancel_btn]
+                .spacing(8)
+                .align_y(Alignment::Center),
+        ]
+        .spacing(6),
+    )
+    .padding(10)
+    .width(Length::Fill)
+    .style(container::rounded_box)
+    .into()
 }
 
 /// Build the tab bar (shown when more than one tab is open).
@@ -318,6 +544,7 @@ pub(super) fn build_shortcuts_panel(app: &MdrApp) -> Element<'_, Message> {
         ("Previous search hit", "", "p"),
         ("Toggle sidebar", "Ctrl-B", ""),
         ("Focus outline sidebar", "", "o"),
+        ("Toggle comment (source) view", "", "c"),
         ("Cycle theme", "Ctrl-T", ""),
         ("Reload file", "Ctrl-R", ""),
         ("Copy document", "Ctrl-C", ""),
@@ -480,6 +707,9 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
 
     let is_mermaid_modal = matches!(app.overlay, Overlay::MermaidModal(_, _));
 
+    // True when the line-comment composer is open, so Escape can cancel it.
+    let comment_active = app.comment_target_line.is_some();
+
     let keys = keyboard::listen()
         .with((
             search_mode,
@@ -488,6 +718,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
             is_mermaid_modal,
             app.active_tab,
             app.pending_key,
+            comment_active,
         ))
         .filter_map(
             |(
@@ -498,6 +729,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     is_mermaid_modal,
                     active_tab,
                     pending_key,
+                    comment_active,
                 ),
                 event,
             )| {
@@ -514,7 +746,8 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     return None;
                 };
 
-                // Escape always closes overlay, search, or sidebar focus
+                // Escape always closes overlay, search, sidebar focus, or an
+                // open comment composer.
                 if matches!(&key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
                     if has_overlay {
                         return Some(Message::CloseOverlay);
@@ -524,6 +757,9 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                     }
                     if sidebar_focused {
                         return Some(Message::UnfocusSidebar);
+                    }
+                    if comment_active {
+                        return Some(Message::CommentCancel);
                     }
                     return None;
                 }
@@ -668,6 +904,7 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                                 "/" => Some(Message::SearchOpen),
                                 "?" => Some(Message::ShowShortcuts),
                                 "o" => Some(Message::SidebarToggleFocus),
+                                "c" => Some(Message::ToggleCommentMode),
                                 // Vim-style tab switching: `gt` → next tab,
                                 // `gT` → previous tab (both wrap around).  These
                                 // fire only when `g` is the pending prefix key.
@@ -721,7 +958,15 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     // IPC: receive file paths sent by later smdr invocations and open them as
     // new tabs.  Only the first instance binds the socket; later invocations
     // hand off via `ipc::client_send` and exit before reaching the GUI.
-    let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
+    //
+    // Disabled in review mode (`ipc_enabled == false`): a review window is a
+    // one-shot, self-contained process — it must not bind the shared socket or
+    // accept tab hand-offs from a normal viewer, so its output stays clean.
+    let mut subs = vec![keys, mouse_events, window_resize, ticker];
+    if app.ipc_enabled {
+        let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
+        subs.push(ipc);
+    }
 
-    Subscription::batch([keys, mouse_events, window_resize, ticker, ipc])
+    Subscription::batch(subs)
 }

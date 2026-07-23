@@ -345,6 +345,155 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             // Open the received file path in a new tab.
             handle_message(app, Message::OpenInNewTab(path))
         }
+        // --- Comment / review mode ---
+        Message::ToggleCommentMode => {
+            app.comment_mode = !app.comment_mode;
+            if app.comment_mode {
+                // Activating comment mode on a file opened WITHOUT `--review`:
+                // restore any auto-saved draft for this document so previously
+                // authored (unsubmitted) comments reappear. `--review` launches
+                // already restore the draft in `AppInit::build`, so guard on an
+                // empty in-memory list to avoid clobbering the current review.
+                if app.comments.is_empty() {
+                    app.comments = smdr::draft::load(&app.file_path);
+                }
+            } else {
+                // Leaving comment mode discards any in-progress composer draft.
+                app.comment_target_line = None;
+                app.comment_draft.clear();
+            }
+            Task::none()
+        }
+        Message::SourceEditorAction(action) => {
+            // Read-only source view: apply navigation/selection actions but
+            // ignore edits so the buffer always mirrors `raw_markdown`.
+            //
+            // The editor is laid out at full content height so the *outer*
+            // scrollable drives scrolling (keeping gutter and text in lockstep).
+            // Because of that, the editor itself can't scroll, yet it still
+            // captures wheel events and emits `Action::Scroll` — which would be
+            // a no-op if performed on the editor. Redirect those to the outer
+            // scrollable so the mouse wheel works in review mode.
+            use iced::widget::text_editor::Action;
+            if let Action::Scroll { lines } = action {
+                return operation::scroll_by(
+                    Id::new(super::state::SOURCE_SCROLLABLE_ID),
+                    AbsoluteOffset {
+                        x: 0.0,
+                        y: lines as f32 * super::state::SOURCE_LINE_PX,
+                    },
+                );
+            }
+            // A click doubles as line selection for commenting: the resulting
+            // cursor line seeds the composer target.
+            if !action.is_edit() {
+                let is_click = matches!(action, Action::Click(_));
+                app.source_content.perform(action);
+                if is_click {
+                    app.comment_target_line = Some(app.source_content.cursor().position.line);
+                    return operation::focus(Id::new(super::state::COMMENT_INPUT_ID));
+                }
+            }
+            Task::none()
+        }
+        Message::GutterLineClicked(line) => {
+            app.comment_target_line = Some(line);
+            app.comment_draft.clear();
+            // Prefill the composer with any existing comment on this line.
+            if let Some(existing) = app.comments.iter().find(|c| c.line == line) {
+                app.comment_draft = existing.comment.clone();
+            }
+            operation::focus(Id::new(super::state::COMMENT_INPUT_ID))
+        }
+        Message::CommentDraftChanged(text) => {
+            app.comment_draft = text;
+            Task::none()
+        }
+        Message::CommentSubmit => {
+            if let Some(line) = app.comment_target_line {
+                let text = app.comment_draft.trim().to_string();
+                // Remove any prior comment on this line, then re-add if non-empty
+                // (an empty submission deletes the comment).
+                app.comments.retain(|c| c.line != line);
+                if !text.is_empty() {
+                    app.comments.push(smdr::annotate::Annotation {
+                        line,
+                        comment: text,
+                    });
+                    app.comments.sort_by_key(|c| c.line);
+                }
+                // Mirror the in-progress comments to the auto-save draft so an
+                // unsubmitted review survives a window close + reopen.
+                smdr::draft::save(&app.file_path, &app.comments);
+            }
+            app.comment_target_line = None;
+            app.comment_draft.clear();
+            Task::none()
+        }
+        Message::CommentCancel => {
+            app.comment_target_line = None;
+            app.comment_draft.clear();
+            Task::none()
+        }
+        Message::ReviewSubmit => {
+            // Emit the completed review turn and exit. The envelope carries the
+            // comments authored in the gutter view, rendered in the chosen
+            // `--format` (default json).
+            //
+            // Output routing:
+            //   * `--out PATH` set    → write there (explicit wins always).
+            //   * foreground `--review` → stdout (a real terminal/pipe).
+            //   * daemonized viewer   → stdout is /dev/null, so writing there
+            //     would silently vanish. Fall back to a discoverable
+            //     timestamped file under the temp dir and log its path to the
+            //     (also /dev/null, but harmless) stderr.
+            //
+            // We `std::process::exit(0)` directly (rather than `iced::exit()`)
+            // so a foreground caller can distinguish a submit (exit 0, output
+            // present) from a window-close/cancel (exit non-zero, no stdout).
+            let comments = std::mem::take(&mut app.comments);
+            let envelope = smdr::annotate::ReviewEnvelope::new(
+                app.file_path.to_string_lossy().to_string(),
+                comments,
+            );
+            let rendered = smdr::annotate::render(&app.raw_markdown, &envelope, app.review_format);
+            match &app.review_out {
+                Some(out_path) => {
+                    if let Err(e) = std::fs::write(out_path, &rendered) {
+                        eprintln!(
+                            "smdr: could not write review output to {}: {e}",
+                            out_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                None if app.daemonized => {
+                    // stdout is detached (/dev/null) — persist to a temp file so
+                    // the review isn't lost.
+                    let out_path = smdr::draft::review_output_path(
+                        &app.file_path,
+                        app.review_format.extension(),
+                    );
+                    if let Err(e) = std::fs::write(&out_path, &rendered) {
+                        eprintln!(
+                            "smdr: could not write review output to {}: {e}",
+                            out_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                    eprintln!("smdr: review written to {}", out_path.display());
+                }
+                None => {
+                    use std::io::Write;
+                    print!("{rendered}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            // The turn is complete — discard the auto-saved draft so a later
+            // review of the same file starts clean.
+            smdr::draft::clear(&app.file_path);
+            std::process::exit(0);
+        }
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.
         _ => Task::none(),
