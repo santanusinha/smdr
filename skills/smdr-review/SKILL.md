@@ -1,10 +1,9 @@
 # smdr-review — Agent Skill
 
-**smdr** (`cargo install smdr`) is a native Markdown viewer with a built-in
-review mode: it opens a file in a GUI window, lets the user click line numbers
-to leave inline comments, and emits a structured JSON envelope on submit.
-Use it to collect precise, line-anchored human feedback on any content an
-agent produces.
+**smdr** is a native Markdown viewer with a built-in review mode: it opens a
+file in a GUI window, collects line-anchored comments from the user, and emits
+a structured JSON envelope on submit. Use it to gather precise human feedback
+on any content an agent produces.
 
 ## First — verify smdr is installed
 
@@ -14,12 +13,10 @@ Before doing anything else, run:
 which smdr
 ```
 
-If the command is not found, tell the user that smdr must be installed first
-and provide the install command:
+If the command is not found, stop and tell the user:
 
-```bash
-cargo install smdr
-```
+> smdr is not installed. Please follow the install instructions at
+> https://santanusinha.github.io/smdr/#install
 
 Do not proceed until `which smdr` succeeds.
 
