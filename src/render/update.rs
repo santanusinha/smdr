@@ -451,9 +451,10 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             // We `std::process::exit(0)` directly (rather than `iced::exit()`)
             // so a foreground caller can distinguish a submit (exit 0, output
             // present) from a window-close/cancel (exit non-zero, no stdout).
+            let comments = std::mem::take(&mut app.comments);
             let envelope = smdr::annotate::ReviewEnvelope::new(
                 app.file_path.to_string_lossy().to_string(),
-                app.comments.clone(),
+                comments,
             );
             let rendered = smdr::annotate::render(&app.raw_markdown, &envelope, app.review_format);
             match &app.review_out {

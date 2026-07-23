@@ -85,7 +85,17 @@ struct Cli {
     format: ReviewFormat,
 }
 
-/// Run one headless review turn and return the process exit code.
+/// Validate that a path given to `--review` is a regular, accessible file.
+///
+/// Exits the process with a descriptive error on failure so both the headless
+/// and interactive `--review` paths share identical validation logic.
+fn require_review_file(file: &std::path::Path) {
+    if !file.is_file() {
+        eprintln!("Error: not a file: {}", file.display());
+        std::process::exit(1);
+    }
+}
+
 ///
 /// Reads the draft from `file`, the annotations from `annotations_in` (a JSON
 /// array of `Annotation` OR a full `ReviewEnvelope`), renders the chosen
@@ -166,12 +176,8 @@ fn main() {
             eprintln!("Error: --review requires a FILE argument");
             std::process::exit(2);
         };
-        if !file.is_file() {
-            eprintln!("Error: not a file: {}", file.display());
-            std::process::exit(1);
-        }
+        require_review_file(file);
         if cli.dry_run {
-            // Parsing/validation only — used by tests, no output written.
             return;
         }
         let code = run_review(
@@ -217,14 +223,7 @@ fn main() {
             eprintln!("Error: --review requires a FILE argument");
             std::process::exit(2);
         };
-        if !file.exists() {
-            eprintln!("Error: file not found: {}", file.display());
-            std::process::exit(1);
-        }
-        if !file.is_file() {
-            eprintln!("Error: not a file: {}", file.display());
-            std::process::exit(1);
-        }
+        require_review_file(file);
         if cli.dry_run {
             return;
         }

@@ -229,7 +229,13 @@ pub(super) fn poll_watcher(app: &mut MdrApp) -> Task<Message> {
                 app.toc = md_helpers::extract_toc(&new_content);
                 app.focused_link = None;
                 app.line_count = new_content.lines().count();
-                app.source_content = iced::widget::text_editor::Content::with_text(&new_content);
+                // Gate the `source_content` rebuild on comment mode: rebuilding the full
+                // text-editor content on every file-watch tick is wasteful when the
+                // reviewer has not opened the source view. Rebuild lazily only when active.
+                if app.comment_mode {
+                    app.source_content =
+                        iced::widget::text_editor::Content::with_text(&new_content);
+                }
                 app.raw_markdown = new_content;
                 app.content = markdown::Content::parse(&app.raw_markdown);
                 return spawn_image_loads(app);

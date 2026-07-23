@@ -25,7 +25,6 @@ pub struct ViewerConfig {
     /// affordance in the source-gutter comment view.
     pub review_mode: bool,
     /// Where a completed review turn is written; `None` means stdout.
-    /// Where a completed review turn is written; `None` means stdout.
     pub review_out: Option<PathBuf>,
     /// Output serializer for a submitted review turn (mirrors `--format`).
     pub review_format: OutputFormat,
@@ -234,7 +233,6 @@ pub(super) enum Message {
 // serializes straight through `annotate`'s json/annotated-md/diff renderers
 // with no bridging type. An annotation is just a 0-based line plus freeform
 // comment text — no op-types.
-// model for future UI.
 
 // ---------------------------------------------------------------------------
 // Saved tab state
@@ -435,7 +433,6 @@ pub(super) struct MdrApp {
     pub(super) comment_target_line: Option<usize>,
     /// Current composer draft text.
     pub(super) comment_draft: String,
-    /// All line-anchored comments authored this session (not yet persisted).
     /// All line-anchored comments authored this session. Stored as review
     /// `Annotation`s so a completed turn serializes with no bridging type.
     pub(super) comments: Vec<Annotation>,

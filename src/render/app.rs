@@ -226,7 +226,6 @@ struct AppInit {
     /// Output serializer for a submitted review turn (mirrors `--format`).
     review_format: smdr::annotate::OutputFormat,
     /// Whether the single-instance IPC server runs for this app.
-    /// Whether the single-instance IPC server runs for this app.
     ipc_enabled: bool,
     /// `true` when the process was daemonized (stdio → /dev/null); routes review
     /// submit output to a timestamped temp file instead of stdout.

@@ -19,6 +19,27 @@ use super::state::{
 };
 use super::widget::MdrViewer;
 
+// ---------------------------------------------------------------------------
+// Gutter color constants (dark / light variants)
+// ---------------------------------------------------------------------------
+
+/// Gutter background color (dark theme).
+const GUTTER_BG_DARK: Color = Color::from_rgb(0.10, 0.11, 0.13);
+/// Gutter background color (light theme).
+const GUTTER_BG_LIGHT: Color = Color::from_rgb(0.96, 0.97, 0.98);
+/// Gutter comment-marker bullet color (dark theme).
+const MARKER_COLOR_DARK: Color = Color::from_rgb(0.45, 0.70, 1.0);
+/// Gutter comment-marker bullet color (light theme).
+const MARKER_COLOR_LIGHT: Color = Color::from_rgb(0.15, 0.40, 0.85);
+/// Gutter line-number text color (dark theme).
+const LINE_NUM_COLOR_DARK: Color = Color::from_rgb(0.55, 0.58, 0.65);
+/// Gutter line-number text color (light theme).
+const LINE_NUM_COLOR_LIGHT: Color = Color::from_rgb(0.50, 0.52, 0.58);
+/// Gutter active-row highlight color (dark theme).
+const ROW_HL_DARK: Color = Color::from_rgb(0.20, 0.24, 0.32);
+/// Gutter active-row highlight color (light theme).
+const ROW_HL_LIGHT: Color = Color::from_rgb(0.85, 0.90, 0.98);
+
 /// Build the main UI element tree.
 pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
     // --- Tab bar (shown only when more than one tab is open) ---
@@ -195,12 +216,30 @@ pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
 /// (or a line in the editor) opens the composer for that 0-based line.
 fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Message> {
     let is_dark = theme.extended_palette().is_dark;
-    let line_px = SOURCE_LINE_PX;
     let line_count = app.source_content.line_count();
 
+    let toolbar = build_review_toolbar(app);
+    let body = build_source_body(app, is_dark, line_count);
+
+    let mut col = column![toolbar, body].height(Length::Fill);
+    if let Some(line) = app.comment_target_line {
+        col = col.push(build_comment_composer(app, line));
+    }
+
+    col.into()
+}
+
+/// Build the highlighted read-only editor + gutter column, wrapped in a
+/// scrollable.  Pinning the editor to its full content height lets the outer
+/// scrollable drive scrolling, keeping gutter and text in lockstep.
+fn build_source_body<'a>(
+    app: &'a MdrApp,
+    is_dark: bool,
+    line_count: usize,
+) -> Element<'a, Message> {
     // Editor height is pinned so the outer scrollable (not the editor) drives
     // scrolling, keeping the gutter and text in lockstep.
-    let editor_height = line_count as f32 * line_px + 2.0 * SOURCE_TOP_PAD;
+    let editor_height = line_count as f32 * SOURCE_LINE_PX + 2.0 * SOURCE_TOP_PAD;
 
     let hl_theme = if is_dark {
         iced::highlighter::Theme::Base16Ocean
@@ -218,11 +257,26 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         .highlight("markdown", hl_theme)
         .height(Length::Fixed(editor_height));
 
-    // --- Gutter: one clickable row per source line ---
+    let gutter_col = build_gutter(app, is_dark, line_count);
+
+    scrollable(row![gutter_col, editor].width(Length::Fill))
+        .id(Id::new(SOURCE_SCROLLABLE_ID))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Build the line-number gutter: one clickable row per source line.
+///
+/// A `HashSet` of commented lines is built once before the loop to keep the
+/// per-row lookup O(1) rather than O(C) (C = comment count).
+fn build_gutter<'a>(app: &'a MdrApp, is_dark: bool, line_count: usize) -> Element<'a, Message> {
+    let commented: std::collections::HashSet<usize> = app.comments.iter().map(|c| c.line).collect();
     let target = app.comment_target_line;
     let mut gutter = column![].width(Length::Fixed(56.0));
+
     for i in 0..line_count {
-        let has_comment = app.comments.iter().any(|c| c.line == i);
+        let has_comment = commented.contains(&i);
         let is_target = target == Some(i);
 
         // A leading marker column keeps the numbers right-aligned while showing
@@ -230,18 +284,18 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         let marker = if has_comment { "●" } else { " " };
         let label = row![
             text(marker).size(SOURCE_TEXT_SIZE - 2.0).color(if is_dark {
-                Color::from_rgb(0.45, 0.70, 1.0)
+                MARKER_COLOR_DARK
             } else {
-                Color::from_rgb(0.15, 0.40, 0.85)
+                MARKER_COLOR_LIGHT
             }),
             container(
                 text(format!("{}", i + 1))
                     .size(SOURCE_TEXT_SIZE - 2.0)
                     .color(if is_dark {
-                        Color::from_rgb(0.55, 0.58, 0.65)
+                        LINE_NUM_COLOR_DARK
                     } else {
-                        Color::from_rgb(0.50, 0.52, 0.58)
-                    })
+                        LINE_NUM_COLOR_LIGHT
+                    }),
             )
             .width(Length::Fill)
             .align_x(Alignment::End),
@@ -249,11 +303,7 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         .spacing(3);
 
         let row_bg = if is_target {
-            Some(if is_dark {
-                Color::from_rgb(0.20, 0.24, 0.32)
-            } else {
-                Color::from_rgb(0.85, 0.90, 0.98)
-            })
+            Some(if is_dark { ROW_HL_DARK } else { ROW_HL_LIGHT })
         } else {
             None
         };
@@ -261,7 +311,7 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         let cell = mouse_area(
             container(label)
                 .width(Length::Fill)
-                .height(Length::Fixed(line_px))
+                .height(Length::Fixed(SOURCE_LINE_PX))
                 .padding([0, 6])
                 .align_y(Alignment::Center)
                 .style(move |_t: &iced::Theme| container::Style {
@@ -275,60 +325,47 @@ fn build_source_view<'a>(app: &'a MdrApp, theme: &iced::Theme) -> Element<'a, Me
         gutter = gutter.push(cell);
     }
 
-    let gutter_col =
-        container(gutter)
-            .padding([SOURCE_TOP_PAD, 0.0])
-            .style(move |_t: &iced::Theme| container::Style {
-                background: Some(Background::Color(if is_dark {
-                    Color::from_rgb(0.10, 0.11, 0.13)
-                } else {
-                    Color::from_rgb(0.96, 0.97, 0.98)
-                })),
-                ..container::Style::default()
-            });
+    container(gutter)
+        .padding([SOURCE_TOP_PAD, 0.0])
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(Background::Color(if is_dark {
+                GUTTER_BG_DARK
+            } else {
+                GUTTER_BG_LIGHT
+            })),
+            ..container::Style::default()
+        })
+        .into()
+}
 
-    let body = scrollable(row![gutter_col, editor].width(Length::Fill))
-        .id(Id::new(SOURCE_SCROLLABLE_ID))
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    // --- Optional inline composer for the targeted line ---
-    let mut col = column![].height(Length::Fill);
-
-    // A top toolbar lets the reviewer submit the turn: it serializes every
-    // gutter-authored comment into the review envelope and exits. Shown in the
-    // source/comment view regardless of how it was entered — an explicit
-    // `--review` launch (foreground, emits to stdout) OR an ad-hoc toggle in a
-    // normally-opened (daemonized) viewer, where submit writes to a timestamped
-    // temp file (see `update::ReviewSubmit`).
-    {
-        let count = app.comments.len();
-        let submit_btn = button(text(format!("Submit review ({count})")).size(12))
-            .on_press(Message::ReviewSubmit)
-            .padding([4, 12])
-            .style(button::primary);
-        let toolbar = container(
-            row![
-                text("Review mode — click a gutter line to comment").size(12),
-                container(submit_btn)
-                    .width(Length::Fill)
-                    .align_x(Alignment::End),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8),
-        )
-        .padding([6, 10])
-        .width(Length::Fill)
-        .style(container::rounded_box);
-        col = col.push(toolbar);
-    }
-
-    col = col.push(body);
-    if let Some(line) = target {
-        col = col.push(build_comment_composer(app, line));
-    }
-
-    col.into()
+/// Build the review toolbar shown at the top of the source view.
+///
+/// The toolbar shows a hint label and a submit button that serializes every
+/// gutter-authored comment into the review envelope and exits. It is visible
+/// regardless of how the source view was entered — an explicit `--review`
+/// launch (foreground, emits to stdout) OR an ad-hoc toggle in a
+/// normally-opened (daemonized) viewer, where submit writes to a timestamped
+/// temp file (see `update::ReviewSubmit`).
+fn build_review_toolbar(app: &MdrApp) -> Element<'_, Message> {
+    let count = app.comments.len();
+    let submit_btn = button(text(format!("Submit review ({count})")).size(12))
+        .on_press(Message::ReviewSubmit)
+        .padding([4, 12])
+        .style(button::primary);
+    container(
+        row![
+            text("Review mode — click a gutter line to comment").size(12),
+            container(submit_btn)
+                .width(Length::Fill)
+                .align_x(Alignment::End),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    )
+    .padding([6, 10])
+    .width(Length::Fill)
+    .style(container::rounded_box)
+    .into()
 }
 
 /// Build the line-comment composer shown at the bottom of the source view.
