@@ -918,7 +918,15 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     // IPC: receive file paths sent by later smdr invocations and open them as
     // new tabs.  Only the first instance binds the socket; later invocations
     // hand off via `ipc::client_send` and exit before reaching the GUI.
-    let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
+    //
+    // Disabled in review mode (`ipc_enabled == false`): a review window is a
+    // one-shot, self-contained process — it must not bind the shared socket or
+    // accept tab hand-offs from a normal viewer, so its output stays clean.
+    let mut subs = vec![keys, mouse_events, window_resize, ticker];
+    if app.ipc_enabled {
+        let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
+        subs.push(ipc);
+    }
 
-    Subscription::batch([keys, mouse_events, window_resize, ticker, ipc])
+    Subscription::batch(subs)
 }

@@ -7,7 +7,7 @@ use std::sync::mpsc::Receiver;
 use iced::Size;
 use iced::widget::{image as image_widget, markdown, scrollable, svg};
 
-use smdr::annotate::Annotation;
+use smdr::annotate::{Annotation, OutputFormat};
 use smdr::markdown::{DocumentLink, TocEntry};
 use smdr::theme::ThemeArg;
 
@@ -25,7 +25,14 @@ pub struct ViewerConfig {
     /// affordance in the source-gutter comment view.
     pub review_mode: bool,
     /// Where a completed review turn is written; `None` means stdout.
+    /// Where a completed review turn is written; `None` means stdout.
     pub review_out: Option<PathBuf>,
+    /// Output serializer for a submitted review turn (mirrors `--format`).
+    pub review_format: OutputFormat,
+    /// Whether the single-instance IPC server runs for this app. Disabled in
+    /// review mode so a review window is fully isolated (its own process, no
+    /// tab hand-off, no socket contention with a normal viewer).
+    pub ipc_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -432,5 +439,12 @@ pub(super) struct MdrApp {
     /// "Submit review" affordance; comment authoring itself is always allowed.
     pub(super) review_mode: bool,
     /// Where a completed review turn is written; `None` means stdout.
+    /// Where a completed review turn is written; `None` means stdout.
     pub(super) review_out: Option<PathBuf>,
+    /// Output serializer for a submitted review turn (mirrors `--format`).
+    pub(super) review_format: OutputFormat,
+    /// Whether the single-instance IPC server runs for this app. Disabled in
+    /// review mode so a review window is fully isolated (its own process, no
+    /// tab hand-off, no socket contention with a normal viewer).
+    pub(super) ipc_enabled: bool,
 }

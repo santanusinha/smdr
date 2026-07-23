@@ -75,6 +75,19 @@ pub struct ReviewEnvelope {
 /// The schema tag every envelope carries. Bump on breaking changes.
 pub const SCHEMA_TAG: &str = "smdr.review/v1";
 
+/// Output serializer for a completed review turn. Shared by the CLI (`--format`)
+/// and the GUI submit so both render identically.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Annotated markdown: whole doc + inline notes (self-contained).
+    Md,
+    /// Structured JSON envelope (for harnesses that branch on kind).
+    Json,
+    /// Unified-diff review transport (sparse; base-in-context). DEFAULT.
+    #[default]
+    Diff,
+}
+
 impl ReviewEnvelope {
     /// Build a submitted envelope for `file` with `annotations`.
     pub fn submitted(file: impl Into<String>, annotations: Vec<Annotation>) -> Self {
@@ -217,6 +230,18 @@ pub fn render_diff(source: &str, env: &ReviewEnvelope) -> String {
         }
     }
     out
+}
+
+/// Render one review turn in the requested [`OutputFormat`].
+///
+/// A single dispatcher shared by the headless CLI path (`--annotations-in`) and
+/// the interactive GUI submit, so both honour `--format` identically.
+pub fn render(source: &str, env: &ReviewEnvelope, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Md => render_annotated_md(source, env),
+        OutputFormat::Json => render_json(env),
+        OutputFormat::Diff => render_diff(source, env),
+    }
 }
 
 // ---------------------------------------------------------------------------

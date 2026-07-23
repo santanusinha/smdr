@@ -103,6 +103,8 @@ pub fn launch(
         extra_tabs,
         review_mode: config.review_mode,
         review_out: config.review_out.clone(),
+        review_format: config.review_format,
+        ipc_enabled: config.ipc_enabled,
     };
 
     // iced requires Fn (not FnOnce) for boot.  We use a Mutex<Option<_>> to
@@ -172,6 +174,8 @@ pub fn launch_stdin(
         extra_tabs: Vec::new(),
         review_mode: config.review_mode,
         review_out: config.review_out.clone(),
+        review_format: config.review_format,
+        ipc_enabled: config.ipc_enabled,
     };
 
     let init = std::sync::Mutex::new(Some(app_state));
@@ -217,6 +221,10 @@ struct AppInit {
     review_mode: bool,
     /// Where a completed review turn is written; `None` means stdout.
     review_out: Option<PathBuf>,
+    /// Output serializer for a submitted review turn (mirrors `--format`).
+    review_format: smdr::annotate::OutputFormat,
+    /// Whether the single-instance IPC server runs for this app.
+    ipc_enabled: bool,
 }
 
 impl AppInit {
@@ -275,13 +283,15 @@ impl AppInit {
             viewport_height: 0.0,
             tabs: Vec::new(),
             active_tab: 0,
-            comment_mode: false,
+            comment_mode: self.review_mode,
             source_content,
             comment_target_line: None,
             comment_draft: String::new(),
             comments: Vec::new(),
             review_mode: self.review_mode,
             review_out: self.review_out,
+            review_format: self.review_format,
+            ipc_enabled: self.ipc_enabled,
         };
         app.line_count = app.raw_markdown.lines().count();
 

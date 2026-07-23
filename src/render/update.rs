@@ -428,25 +428,37 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         }
         Message::ReviewSubmit => {
             // Emit the completed review turn and exit. The envelope carries the
-            // annotations authored in the gutter view; output goes to `--out`
-            // (if set) or stdout, in the canonical JSON form.
+            // annotations authored in the gutter view, rendered in the chosen
+            // `--format` (default diff). Output goes to `--out` (if set) or
+            // stdout. Because the review window runs in the FOREGROUND (no
+            // daemonize), stdout is a real terminal/pipe the caller can read.
+            //
+            // We `std::process::exit(0)` directly (rather than `iced::exit()`)
+            // so the caller can reliably distinguish a submit (exit 0, output
+            // present) from a window-close/cancel (exit 3, no stdout) — see
+            // `launch_review` in app.rs.
             let envelope = smdr::annotate::ReviewEnvelope::submitted(
                 app.file_path.to_string_lossy().to_string(),
                 app.comments.clone(),
             );
-            let json = smdr::annotate::render_json(&envelope);
+            let rendered = smdr::annotate::render(&app.raw_markdown, &envelope, app.review_format);
             match &app.review_out {
                 Some(out_path) => {
-                    if let Err(e) = std::fs::write(out_path, &json) {
+                    if let Err(e) = std::fs::write(out_path, &rendered) {
                         eprintln!(
                             "smdr: could not write review output to {}: {e}",
                             out_path.display()
                         );
+                        std::process::exit(1);
                     }
                 }
-                None => print!("{json}"),
+                None => {
+                    use std::io::Write;
+                    print!("{rendered}");
+                    let _ = std::io::stdout().flush();
+                }
             }
-            iced::exit()
+            std::process::exit(0);
         }
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.

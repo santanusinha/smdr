@@ -5,6 +5,7 @@ mod ipc;
 mod render;
 
 use clap::Parser;
+use smdr::annotate::OutputFormat;
 use smdr::theme::ThemeArg;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -20,6 +21,16 @@ enum ReviewFormat {
     Json,
     /// Unified-diff review transport (sparse; base-in-context). DEFAULT.
     Diff,
+}
+
+impl From<ReviewFormat> for OutputFormat {
+    fn from(f: ReviewFormat) -> Self {
+        match f {
+            ReviewFormat::Md => OutputFormat::Md,
+            ReviewFormat::Json => OutputFormat::Json,
+            ReviewFormat::Diff => OutputFormat::Diff,
+        }
+    }
 }
 
 /// Simple Markdown Reader.
@@ -85,9 +96,7 @@ fn run_review(
     out: Option<&std::path::Path>,
     format: ReviewFormat,
 ) -> i32 {
-    use smdr::annotate::{
-        Annotation, ReviewEnvelope, render_annotated_md, render_diff, render_json,
-    };
+    use smdr::annotate::{Annotation, ReviewEnvelope, render};
 
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
@@ -123,11 +132,9 @@ fn run_review(
         None => ReviewEnvelope::submitted(file.to_string_lossy(), Vec::new()),
     };
 
-    let rendered = match format {
-        ReviewFormat::Md => render_annotated_md(&source, &env),
-        ReviewFormat::Json => render_json(&env),
-        ReviewFormat::Diff => render_diff(&source, &env),
-    };
+    // Single dispatcher shared with the interactive GUI submit so both honour
+    // `--format` identically.
+    let rendered = render(&source, &env, format.into());
 
     match out {
         Some(path) => {
@@ -189,7 +196,42 @@ fn main() {
         // envelope to --out (or stdout) on ReviewSubmit.
         review_mode: cli.review,
         review_out: cli.out.clone(),
+        review_format: cli.format.into(),
+        // A review window is a one-shot, self-contained process: it does NOT
+        // run the IPC server (no tab hand-off, no shared socket). A normal
+        // viewer does, so later invocations open as tabs.
+        ipc_enabled: !cli.review,
     };
+
+    // Interactive review: open a SINGLE foreground window straight into review
+    // mode. Unlike the normal viewer we deliberately do NOT daemonize — the
+    // double-fork redirects stdout/stderr to /dev/null, which would silently
+    // swallow the review output emitted on ReviewSubmit. Running in the
+    // foreground keeps stdout wired to the caller's terminal/pipe so the
+    // diffed (or --format) output is delivered on submit.
+    if cli.review {
+        let Some(file) = cli.files.first() else {
+            eprintln!("Error: --review requires a FILE argument");
+            std::process::exit(2);
+        };
+        if !file.exists() {
+            eprintln!("Error: file not found: {}", file.display());
+            std::process::exit(1);
+        }
+        if !file.is_file() {
+            eprintln!("Error: not a file: {}", file.display());
+            std::process::exit(1);
+        }
+        if cli.dry_run {
+            return;
+        }
+        let abs = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+        if let Err(e) = render::launch(&[abs], &config) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Determine input source: file argument(s) or stdin pipe
     let stdin_is_pipe = !std::io::stdin().is_terminal();
