@@ -402,30 +402,23 @@ fn build_comment_composer(app: &MdrApp, line: usize) -> Element<'_, Message> {
 
     let mut btns = row![input, save_btn];
     if has_existing {
-        let delete_btn =
-            button(text("🗑").size(14).color(Color::from_rgb(0.90, 0.22, 0.22)))
-                .on_press(Message::CommentDelete)
-                .padding([4, 8])
-                .style(|_t, _s| button::Style {
-                    background: None,
-                    border: border::rounded(4),
-                    ..button::Style::default()
-                });
+        let delete_btn = button(text("🗑").size(14).color(Color::from_rgb(0.90, 0.22, 0.22)))
+            .on_press(Message::CommentDelete)
+            .padding([4, 8])
+            .style(|_t, _s| button::Style {
+                background: None,
+                border: border::rounded(4),
+                ..button::Style::default()
+            });
         btns = btns.push(delete_btn);
     }
     btns = btns.push(cancel_btn);
 
-    container(
-        column![
-            header,
-            btns.spacing(8).align_y(Alignment::Center),
-        ]
-        .spacing(6),
-    )
-    .padding(10)
-    .width(Length::Fill)
-    .style(container::rounded_box)
-    .into()
+    container(column![header, btns.spacing(8).align_y(Alignment::Center),].spacing(6))
+        .padding(10)
+        .width(Length::Fill)
+        .style(container::rounded_box)
+        .into()
 }
 
 /// Build the tab bar (shown when more than one tab is open).
