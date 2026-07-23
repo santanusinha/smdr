@@ -369,6 +369,7 @@ fn build_review_toolbar(app: &MdrApp) -> Element<'_, Message> {
 }
 
 /// Build the line-comment composer shown at the bottom of the source view.
+/// Build the line-comment composer shown at the bottom of the source view.
 fn build_comment_composer(app: &MdrApp, line: usize) -> Element<'_, Message> {
     let header = text(format!("Comment on line {}", line + 1)).size(12);
     let input = text_input("Write a comment…", &app.comment_draft)
@@ -379,21 +380,45 @@ fn build_comment_composer(app: &MdrApp, line: usize) -> Element<'_, Message> {
         .size(13)
         .width(Length::Fill);
 
-    let save_btn = button(text("Save").size(12))
+    // Transparent buttons with coloured icon outlines.
+    let save_btn = button(text("✓").size(14).color(Color::from_rgb(0.2, 0.78, 0.35)))
         .on_press(Message::CommentSubmit)
-        .padding([4, 10])
-        .style(button::primary);
-    let cancel_btn = button(text("Cancel").size(12))
+        .padding([4, 8])
+        .style(|_t, _s| button::Style {
+            background: None,
+            border: border::rounded(4),
+            ..button::Style::default()
+        });
+    let cancel_btn = button(text("✕").size(14).color(Color::from_rgb(0.22, 0.55, 0.92)))
         .on_press(Message::CommentCancel)
-        .padding([4, 10])
-        .style(button::text);
+        .padding([4, 8])
+        .style(|_t, _s| button::Style {
+            background: None,
+            border: border::rounded(4),
+            ..button::Style::default()
+        });
+
+    let has_existing = app.comments.iter().any(|c| c.line == line);
+
+    let mut btns = row![input, save_btn];
+    if has_existing {
+        let delete_btn =
+            button(text("🗑").size(14).color(Color::from_rgb(0.90, 0.22, 0.22)))
+                .on_press(Message::CommentDelete)
+                .padding([4, 8])
+                .style(|_t, _s| button::Style {
+                    background: None,
+                    border: border::rounded(4),
+                    ..button::Style::default()
+                });
+        btns = btns.push(delete_btn);
+    }
+    btns = btns.push(cancel_btn);
 
     container(
         column![
             header,
-            row![input, save_btn, cancel_btn]
-                .spacing(8)
-                .align_y(Alignment::Center),
+            btns.spacing(8).align_y(Alignment::Center),
         ]
         .spacing(6),
     )

@@ -216,6 +216,8 @@ pub(super) enum Message {
     CommentSubmit,
     /// Discard the current composer draft without saving.
     CommentCancel,
+    /// Delete the existing comment on the current target line and close the composer.
+    CommentDelete,
     /// A raw `text_editor` action from the source view. Edit actions are
     /// ignored (read-only); selection/scroll/click actions are applied.
     SourceEditorAction(iced::widget::text_editor::Action),

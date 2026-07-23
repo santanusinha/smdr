@@ -435,6 +435,15 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             app.comment_draft.clear();
             Task::none()
         }
+        Message::CommentDelete => {
+            if let Some(line) = app.comment_target_line {
+                app.comments.retain(|c| c.line != line);
+                smdr::draft::save(&app.file_path, &app.comments);
+            }
+            app.comment_target_line = None;
+            app.comment_draft.clear();
+            Task::none()
+        }
         Message::ReviewSubmit => {
             // Emit the completed review turn and exit. The envelope carries the
             // comments authored in the gutter view, rendered in the chosen
