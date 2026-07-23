@@ -91,6 +91,10 @@ cat README.md | smdr
 | `-t`, `--theme <THEME>` | Color theme (default: `system`) |
 | `--no-network` | Disable network image fetching (use local files only) |
 | `--list-themes` | List available themes and exit |
+| `--review` | Open file in review mode |
+| `--annotations-in <PATH>` | Annotations JSON file (enables headless review) |
+| `--out <PATH>` | Write review output to `<PATH>` instead of stdout |
+| `--format <FORMAT>` | Output format: `json` (default), `md`, or `diff` |
 
 !!! tip "stdin support"
     smdr automatically detects piped input — no flag needed:
@@ -99,6 +103,200 @@ cat README.md | smdr
     man git | smdr
     ```
 
+---
+
+## Review mode
+
+smdr includes an interactive review mode for annotating Markdown documents
+line-by-line and exporting the result in several formats.
+
+### Interactive review
+
+```sh
+smdr --review README.md
+```
+
+The source is displayed with a numbered gutter. Click any line number to open
+the comment composer for that line; press `Esc` to cancel. Click
+**Submit review** (or press `Ctrl-Enter`) to emit output and exit.
+
+**Draft auto-save** — unsaved comments survive window close and are restored
+the next time you open the same file with `--review`. Drafts are cleared on
+submit.
+
+### Headless (one-shot) review
+
+Pass `--annotations-in` to run without a GUI:
+
+```sh
+smdr --review --annotations-in annotations.json --format md --out review.md README.md
+```
+
+smdr reads the annotations, merges them with the source, writes output, and
+exits immediately.
+
+### Output formats
+
+| Value | Description |
+|-------|-------------|
+| `json` | Structured JSON envelope (default) — schema-tagged, one object per annotation |
+| `md` | Annotated Markdown with `<!-- smdr: … -->` comment blocks inserted after each annotated line |
+| `diff` | Insertion-only unified diff with 6 lines of context per hunk |
+
+### JSON envelope schema
+
+The `json` format (and the `--annotations-in` input) use a `ReviewEnvelope` object:
+
+```json
+{
+  "schema": "smdr.review/v1",
+  "file": "README.md",
+  "comments": [
+    { "line": 0, "comment": "Title looks good." },
+    { "line": 7, "comment": "Add a quickstart example here." }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `schema` | string | `"smdr.review/v1"` — bump on breaking changes |
+| `file` | string | Path to the reviewed file (informational) |
+| `comments[].line` | integer | **0-based** source line the comment is anchored to |
+| `comments[].comment` | string | Freeform review note |
+
+!!! note "Draft lifetime"
+    Drafts are stored in `$TMPDIR/smdr-drafts/` until you submit or delete
+    them manually. Automatic expiry is planned for a future release.
+
+---
+
+## Using smdr review mode from AI agents
+
+smdr's review mode is designed to be used programmatically: an AI agent writes
+a plan or todo list to a temporary Markdown file, opens it in smdr, waits for
+you to annotate it, then reads the JSON feedback and acts on your comments.
+
+This gives you **line-level control** over any content an agent produces before
+it takes irreversible action.
+
+### The `smdr-review` agent skill
+
+If you are using the [Sai](https://github.com/santanusinha/sai) agent framework,
+there is a ready-made skill that encapsulates this entire workflow.
+
+Install it by copying `SKILL.md` into your skills directory
+(`~/.config/sai/skills/smdr-review/SKILL.md`). The skill is available
+in the [smdr repository](https://github.com/santanusinha/smdr) under
+`skills/smdr-review/`.
+
+Once installed, the agent will automatically open smdr for human sign-off
+when it detects phrases like:
+
+- _"get feedback on this plan"_
+- _"let me review"_ / _"user review"_ / _"need sign-off"_
+- _"ask the user to annotate"_
+- any situation where a plan or todo list was produced before an irreversible step
+
+### How it works (shell)
+
+You can also drive this workflow directly from a shell script or any language
+that can run a subprocess:
+
+```bash
+# 1. Write the content to a temp file
+REVIEW_FILE=$(mktemp /tmp/smdr-review-XXXXXX.md)
+cat > "$REVIEW_FILE" << 'EOF'
+# Deployment plan
+
+## Phase 1 — pre-flight
+- [ ] Run migration dry-run
+- [ ] Confirm backup exists
+
+## Phase 2 — deploy
+- [ ] Apply migration
+- [ ] Restart service
+EOF
+
+# 2. Open review mode; stdout is the JSON envelope
+FEEDBACK=$(smdr --review "$REVIEW_FILE")
+
+# 3. Print each comment
+echo "$FEEDBACK" | jq -r '.comments[] | "Line \(.line): \(.comment)"'
+
+# 4. Clean up
+rm -f "$REVIEW_FILE"
+```
+
+Or save the output to a file and post-process it:
+
+```bash
+smdr --review --out /tmp/feedback.json plan.md
+jq '.comments' /tmp/feedback.json
+```
+
+### How it works (Python)
+
+```python
+import json, subprocess, tempfile, os
+
+plan = """
+# Refactoring plan
+
+## Step 1
+- Extract `render` into its own module
+
+## Step 2
+- Delete the old `view.rs`
+"""
+
+with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w") as f:
+    f.write(plan)
+    path = f.name
+
+result = subprocess.run(
+    ["smdr", "--review", "--out", "/tmp/smdr-fb.json", path],
+)
+feedback = json.loads(open("/tmp/smdr-fb.json").read())
+os.unlink(path)
+os.unlink("/tmp/smdr-fb.json")
+
+for c in feedback["comments"]:
+    print(f"Line {c['line']}: {c['comment']}")
+```
+
+### Mapping comments back to source lines
+
+Line numbers in `comments[].line` are **0-based**. To read the actual content
+of a commented line:
+
+```bash
+# bash — line 4 (0-based) is sed line 5
+sed -n "5p" plan.md
+
+# Python
+lines = open("plan.md").readlines()
+print(lines[4])   # index 4 == line 4 (0-based)
+```
+
+### Headless path (no GUI)
+
+In CI or headless environments, skip the GUI entirely — write an
+annotations file yourself and use `--annotations-in` to render the output:
+
+```bash
+cat > annotations.json << 'EOF'
+{
+  "schema": "smdr.review/v1",
+  "file": "plan.md",
+  "comments": [
+    { "line": 3, "comment": "Missing rollback step." }
+  ]
+}
+EOF
+
+smdr --review --annotations-in annotations.json --format md --out report.md plan.md
+```
 ---
 
 ## Keymap
@@ -170,7 +368,16 @@ has a close (✕) button, and clicking a tab switches to it.
 | `Ctrl-T` | Cycle theme |
 | `?` | Show keyboard shortcuts |
 | `qq` / `ZZ` | Exit |
-| `Esc` | Close overlay / unfocus sidebar |
+| `Esc` | Close overlay / unfocus sidebar / cancel comment composer |
+
+### Review mode
+
+| Key / Action | Behaviour |
+|---|---|
+| Click gutter line | Open comment composer |
+| `c` | Toggle source / comment-overlay view |
+| `Esc` (in composer) | Cancel comment without saving |
+| `Ctrl-Enter` | Submit review and exit |
 
 ### Mermaid diagrams
 

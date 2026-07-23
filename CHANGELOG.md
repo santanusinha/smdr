@@ -4,6 +4,36 @@ All notable changes to **smdr** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
+# Changelog
+
+All notable changes to **smdr** are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+---
+
+## [0.1.4] — 2026-07-23
+
+### Added
+- **`smdr-review` agent skill** — a ready-made skill file
+  (`skills/smdr-review/SKILL.md`) for the Sai agent framework. Agents can
+  now open any plan, todo list, or document in smdr's review mode, wait for
+  line-level human annotations, and act on the structured JSON feedback
+  before taking irreversible action.
+
+### Docs
+- **JSON envelope schema** — the `ReviewEnvelope` JSON structure
+  (`schema`, `file`, `comments[].line`, `comments[].comment`) is now fully
+  documented in both the README and the documentation site, including a
+  field table and concrete examples.
+- **Agent integration guide** — new section in the documentation site
+  covering: how to call `smdr --review` from shell scripts and Python,
+  how to map 0-based line indices back to source content, headless
+  `--annotations-in` path for CI, and how to install and use the
+  `smdr-review` skill.
+- Draft-persistence caveat added: `$TMPDIR/smdr-drafts/` files persist
+  until submit; automatic expiry planned for a future release.
+
+---
 
 ## [0.1.3] — 2026-07-22
 
