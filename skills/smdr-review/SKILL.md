@@ -130,12 +130,20 @@ feedback = json.loads(subprocess.check_output(["smdr", "--review", path]))
 
 ## Headless / non-interactive path
 
-If you already have an annotations file and want to render a formatted report
-without opening a window (e.g. in CI):
+Use this when there is no display available (e.g. CI) or when you want to
+produce a formatted report from an existing annotations file.
+
+The annotations file is a `ReviewEnvelope` — the same JSON that smdr emits
+from an interactive session. Save one with `--out`:
+
+```bash
+smdr --review --out annotations.json plan.md
+```
+
+Then render it into a report at any time, without opening a window:
 
 ```bash
 smdr --review --annotations-in annotations.json --format md plan.md
 ```
 
 Formats: `json` (default), `md` (annotated Markdown), `diff` (unified diff).
-The annotations file uses the same `ReviewEnvelope` schema shown above.
