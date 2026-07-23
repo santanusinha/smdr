@@ -77,14 +77,16 @@ pub const SCHEMA_TAG: &str = "smdr.review/v1";
 
 /// Output serializer for a completed review turn. Shared by the CLI (`--format`)
 /// and the GUI submit so both render identically.
+/// Output serializer for a completed review turn. Shared by the CLI (`--format`)
+/// and the GUI submit so both render identically.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputFormat {
     /// Annotated markdown: whole doc + inline notes (self-contained).
     Md,
-    /// Structured JSON envelope (for harnesses that branch on kind).
-    Json,
-    /// Unified-diff review transport (sparse; base-in-context). DEFAULT.
+    /// Structured JSON envelope (for harnesses that branch on kind). DEFAULT.
     #[default]
+    Json,
+    /// Unified-diff review transport (sparse; base-in-context).
     Diff,
 }
 

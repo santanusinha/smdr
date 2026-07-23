@@ -17,9 +17,9 @@ use render::ViewerConfig;
 enum ReviewFormat {
     /// Annotated markdown: whole doc + inline notes (self-contained).
     Md,
-    /// Structured JSON envelope (for harnesses that branch on kind).
+    /// Structured JSON envelope (for harnesses that branch on kind). DEFAULT.
     Json,
-    /// Unified-diff review transport (sparse; base-in-context). DEFAULT.
+    /// Unified-diff review transport (sparse; base-in-context).
     Diff,
 }
 
@@ -81,7 +81,7 @@ struct Cli {
     out: Option<PathBuf>,
 
     /// Output format for review mode.
-    #[arg(long, value_enum, default_value_t = ReviewFormat::Diff)]
+    #[arg(long, value_enum, default_value_t = ReviewFormat::Json)]
     format: ReviewFormat,
 }
 
