@@ -1,14 +1,27 @@
 # smdr-review — Agent Skill
 
-Open any Markdown content in **smdr's interactive review mode**, wait for the
-user to annotate it line-by-line, then read the structured JSON feedback and
-act on it.
+**smdr** (`cargo install smdr`) is a native Markdown viewer with a built-in
+review mode: it opens a file in a GUI window, lets the user click line numbers
+to leave inline comments, and emits a structured JSON envelope on submit.
+Use it to collect precise, line-anchored human feedback on any content an
+agent produces.
 
-This bridges the gap between automated agent work and human judgement: instead
-of dumping a wall of text in the chat and hoping the user responds clearly,
-you open a polished native viewer, the user clicks line numbers to leave
-pinned comments, and you get back a clean JSON structure that tells you exactly
-which line each comment refers to.
+## First — verify smdr is installed
+
+Before doing anything else, run:
+
+```bash
+which smdr
+```
+
+If the command is not found, tell the user that smdr must be installed first
+and provide the install command:
+
+```bash
+cargo install smdr
+```
+
+Do not proceed until `which smdr` succeeds.
 
 ---
 
@@ -30,9 +43,8 @@ which line each comment refers to.
 ### Step 1 — Write the content to a temp file
 
 The content must be a Markdown file. If it isn't already Markdown, convert it:
-plain text can be left as-is (smdr renders it fine), structured data should
-become a Markdown table or fenced code block, and headings help the user
-navigate long documents.
+plain text can be left as-is, structured data should become a Markdown table
+or fenced code block, and headings help the user navigate long documents.
 
 ```bash
 REVIEW_FILE=$(mktemp /tmp/smdr-review-XXXXXX.md)
@@ -43,30 +55,16 @@ cat > "$REVIEW_FILE" << 'EOF'
 EOF
 ```
 
-Give the file a meaningful title (`# H1`) so the user immediately understands
-what they are reviewing. Use `##` sections to separate logical groups (e.g.
-"## Phase 1", "## Risks", "## Open questions"). This makes the gutter line
-numbers more meaningful.
+Give the file a meaningful title (`# H1`). Use `##` sections to separate
+logical groups (e.g. "## Phase 1", "## Risks", "## Open questions").
 
 ### Step 2 — Open smdr in review mode
-
-```bash
-smdr --review "$REVIEW_FILE"
-```
-
-smdr opens a native window. The user can:
-- Click any **gutter line number** to leave a comment on that line.
-- Press `c` to toggle between rendered and raw-source view.
-- Press `Ctrl-Enter` (or click **Submit review**) when done — this writes
-  the JSON envelope to stdout and exits.
-
-Capture the output:
 
 ```bash
 FEEDBACK_JSON=$(smdr --review "$REVIEW_FILE")
 ```
 
-Or if you need to persist it:
+Or persist the output to a file:
 
 ```bash
 smdr --review --out /tmp/smdr-feedback.json "$REVIEW_FILE"
@@ -90,7 +88,7 @@ The output is a `ReviewEnvelope` JSON object:
 
 | Field | Meaning |
 |---|---|
-| `schema` | Always `"smdr.review/v1"` — useful for version-gating |
+| `schema` | Always `"smdr.review/v1"` |
 | `file` | Path to the file that was reviewed |
 | `comments[].line` | **0-based** source line the comment is anchored to |
 | `comments[].comment` | The user's freeform note |
@@ -113,9 +111,8 @@ for c in env["comments"]:
 **What to do with the feedback:**
 
 - **No comments** — the user is happy; proceed.
-- **Comments on specific lines** — read the source file to find what line `N`
-  contains, then address each comment in turn. Map the 0-based line index back
-  to the file with `sed -n "$((line+1))p" "$REVIEW_FILE"`.
+- **Comments on specific lines** — map the 0-based line index back to source
+  content with `sed -n "$((line+1))p" "$REVIEW_FILE"`, then address each comment.
 - **Blocking concerns** — surface them to the user in chat and ask how to
   resolve before continuing.
 - **Approval comments** ("looks good", "✓", "approved") — treat as a green
@@ -127,16 +124,9 @@ for c in env["comments"]:
 rm -f "$REVIEW_FILE" /tmp/smdr-feedback.json
 ```
 
-Draft files are auto-saved by smdr to `$TMPDIR/smdr-drafts/` until submitted,
-so the user can safely close and reopen the window without losing work. They
-are cleared automatically on submit.
-
 ---
 
 ## Helper: convert a structured list to Markdown
-
-If you have a plain-text todo list or a data structure, convert it before
-passing to smdr:
 
 ```python
 import subprocess, tempfile, json, os
@@ -155,19 +145,14 @@ for item in items:
         lines.append(f"\n## Phase {current_phase}\n")
     lines.append(f"- [ ] {item['task']} _(risk: {item['risk']})_")
 
-md = "\n".join(lines)
-
 with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w") as f:
-    f.write(md)
+    f.write("\n".join(lines))
     path = f.name
 
 subprocess.run(["smdr", "--review", "--out", "/tmp/smdr-fb.json", path])
 feedback = json.loads(open("/tmp/smdr-fb.json").read())
 os.unlink(path)
 os.unlink("/tmp/smdr-fb.json")
-
-for c in feedback["comments"]:
-    print(f'Line {c["line"]}: {c["comment"]}')
 ```
 
 ---
@@ -182,17 +167,4 @@ smdr --review --annotations-in annotations.json --format md --out report.md plan
 ```
 
 Formats: `json` (default), `md` (annotated Markdown), `diff` (unified diff).
-
 The annotations file uses the same `ReviewEnvelope` schema shown above.
-
----
-
-## Checklist
-
-Before calling `smdr --review`, verify:
-
-- [ ] `smdr` is on PATH (`which smdr` succeeds)
-- [ ] The temp file is valid Markdown with a top-level `# Title`
-- [ ] A display is available — smdr opens a native window (X11/Wayland/macOS);
-      use the `--annotations-in` path in headless/CI environments
-- [ ] You are capturing stdout or using `--out` to save the JSON feedback
