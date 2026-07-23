@@ -57,17 +57,17 @@ logical groups (e.g. "## Phase 1", "## Risks", "## Open questions").
 
 ### Step 2 — Open smdr in review mode
 
-```bash
-### Step 2 — Open smdr in review mode
-
 smdr blocks until the user submits, then writes the JSON envelope to stdout
 and exits. Capture it directly:
 
 ```bash
-FEEDBACK_JSON=$(smdr --review "$REVIEW_FILE")
+FEEDBACK=$(smdr --review "$REVIEW_FILE")
 ```
 
-The output is a `ReviewEnvelope` JSON object:
+### Step 3 — Read the feedback
+
+The output is a `ReviewEnvelope` JSON object — read it directly, no parsing
+needed:
 
 ```json
 {
@@ -87,43 +87,22 @@ The output is a `ReviewEnvelope` JSON object:
 | `comments[].line` | **0-based** source line the comment is anchored to |
 | `comments[].comment` | The user's freeform note |
 
-Parse with `jq`:
-
-```bash
-echo "$FEEDBACK_JSON" | jq -r '.comments[] | "Line \(.line): \(.comment)"'
-```
-
-Or with Python:
-
-```python
-import json, sys
-env = json.load(sys.stdin)
-for c in env["comments"]:
-    print(f'Line {c["line"]}: {c["comment"]}')
-```
-
 **What to do with the feedback:**
 
 - **No comments** — the user is happy; proceed.
-- **Comments on specific lines** — map the 0-based line index back to source
-  content with `sed -n "$((line+1))p" "$REVIEW_FILE"`, then address each comment.
+- **Comments on specific lines** — `comments[].line` is 0-based; find the
+  corresponding line in the source file and address the comment.
 - **Blocking concerns** — surface them to the user in chat and ask how to
   resolve before continuing.
 - **Approval comments** ("looks good", "✓", "approved") — treat as a green
   light for that section.
-
-### Step 4 — Clean up
-
-```bash
-rm -f "$REVIEW_FILE"
-```
 
 ---
 
 ## Helper: convert a structured list to Markdown
 
 ```python
-import subprocess, tempfile, json, os
+import subprocess, tempfile, json
 
 items = [
     {"phase": 1, "task": "Scaffold project", "risk": "low"},
@@ -144,14 +123,15 @@ with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w") as f:
     path = f.name
 
 feedback = json.loads(subprocess.check_output(["smdr", "--review", path]))
-os.unlink(path)
+# feedback is a dict — read it directly
+```
 
 ---
 
 ## Headless / non-interactive path
 
-If you already have an annotations file and want to render a report without
-opening a window (e.g. in CI):
+If you already have an annotations file and want to render a formatted report
+without opening a window (e.g. in CI):
 
 ```bash
 smdr --review --annotations-in annotations.json --format md plan.md
