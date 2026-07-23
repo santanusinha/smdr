@@ -413,6 +413,9 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                     });
                     app.comments.sort_by_key(|c| c.line);
                 }
+                // Mirror the in-progress comments to the auto-save draft so an
+                // unsubmitted review survives a window close + reopen.
+                smdr::draft::save(&app.file_path, &app.comments);
             }
             app.comment_target_line = None;
             app.comment_draft.clear();
@@ -425,16 +428,14 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         }
         Message::ReviewSubmit => {
             // Emit the completed review turn and exit. The envelope carries the
-            // annotations authored in the gutter view, rendered in the chosen
-            // `--format` (default diff). Output goes to `--out` (if set) or
-            // stdout. Because the review window runs in the FOREGROUND (no
-            // daemonize), stdout is a real terminal/pipe the caller can read.
-            // Emit the completed review turn and exit. The envelope carries the
             // comments authored in the gutter view, rendered in the chosen
             // `--format` (default json). Output goes to `--out` (if set) or
             // stdout. Because the review window runs in the FOREGROUND (no
-            // present) from a window-close/cancel (exit 3, no stdout) — see
-            // `launch_review` in app.rs.
+            // daemonize), stdout is a real terminal/pipe the caller can read.
+            //
+            // We `std::process::exit(0)` directly (rather than `iced::exit()`)
+            // so the caller can reliably distinguish a submit (exit 0, output
+            // present) from a window-close/cancel (exit non-zero, no stdout).
             let envelope = smdr::annotate::ReviewEnvelope::new(
                 app.file_path.to_string_lossy().to_string(),
                 app.comments.clone(),
@@ -456,6 +457,9 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
                     let _ = std::io::stdout().flush();
                 }
             }
+            // The turn is complete — discard the auto-saved draft so a later
+            // review of the same file starts clean.
+            smdr::draft::clear(&app.file_path);
             std::process::exit(0);
         }
         // Search and sidebar messages are handled above and never reach here,

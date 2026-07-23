@@ -241,6 +241,14 @@ impl AppInit {
         let network_enabled = self.network_enabled;
         let extra_tabs = self.extra_tabs;
 
+        // In review mode, restore any auto-saved draft for this file (computed
+        // before `self.file_path` is moved into the struct below).
+        let restored_comments = if self.review_mode {
+            smdr::draft::load(&self.file_path)
+        } else {
+            Vec::new()
+        };
+
         let mut app = MdrApp {
             raw_markdown: self.markdown_src,
             line_count: 0, // will be set via the helper below
@@ -287,7 +295,10 @@ impl AppInit {
             source_content,
             comment_target_line: None,
             comment_draft: String::new(),
-            comments: Vec::new(),
+            // In review mode, restore any auto-saved draft for this file so a
+            // reviewer who closed the window without submitting picks up where
+            // they left off. Normal viewing starts with no comments.
+            comments: restored_comments,
             review_mode: self.review_mode,
             review_out: self.review_out,
             review_format: self.review_format,
