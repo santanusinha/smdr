@@ -345,6 +345,64 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             // Open the received file path in a new tab.
             handle_message(app, Message::OpenInNewTab(path))
         }
+        // --- Comment / review mode ---
+        Message::ToggleCommentMode => {
+            app.comment_mode = !app.comment_mode;
+            // Leaving comment mode discards any in-progress composer draft.
+            if !app.comment_mode {
+                app.comment_target_line = None;
+                app.comment_draft.clear();
+            }
+            Task::none()
+        }
+        Message::SourceEditorAction(action) => {
+            // Read-only source view: apply navigation/selection/scroll actions
+            // but ignore edits so the buffer always mirrors `raw_markdown`.
+            // A click doubles as line selection for commenting: the resulting
+            // cursor line seeds the composer target.
+            if !action.is_edit() {
+                let is_click = matches!(action, iced::widget::text_editor::Action::Click(_));
+                app.source_content.perform(action);
+                if is_click {
+                    app.comment_target_line = Some(app.source_content.cursor().position.line);
+                    return operation::focus(Id::new(super::state::COMMENT_INPUT_ID));
+                }
+            }
+            Task::none()
+        }
+        Message::GutterLineClicked(line) => {
+            app.comment_target_line = Some(line);
+            app.comment_draft.clear();
+            // Prefill the composer with any existing comment on this line.
+            if let Some(existing) = app.comments.iter().find(|c| c.line == line) {
+                app.comment_draft = existing.text.clone();
+            }
+            operation::focus(Id::new(super::state::COMMENT_INPUT_ID))
+        }
+        Message::CommentDraftChanged(text) => {
+            app.comment_draft = text;
+            Task::none()
+        }
+        Message::CommentSubmit => {
+            if let Some(line) = app.comment_target_line {
+                let text = app.comment_draft.trim().to_string();
+                // Remove any prior comment on this line, then re-add if non-empty
+                // (an empty submission deletes the comment).
+                app.comments.retain(|c| c.line != line);
+                if !text.is_empty() {
+                    app.comments.push(super::state::LineComment { line, text });
+                    app.comments.sort_by_key(|c| c.line);
+                }
+            }
+            app.comment_target_line = None;
+            app.comment_draft.clear();
+            Task::none()
+        }
+        Message::CommentCancel => {
+            app.comment_target_line = None;
+            app.comment_draft.clear();
+            Task::none()
+        }
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.
         _ => Task::none(),

@@ -21,6 +21,7 @@ pub(super) fn load_file(app: &mut MdrApp, path: &Path) -> Task<Message> {
             app.toc = md_helpers::extract_toc(&src);
             app.focused_link = None;
             app.line_count = src.lines().count();
+            app.source_content = iced::widget::text_editor::Content::with_text(&src);
             app.raw_markdown = src;
             app.content = markdown::Content::parse(&app.raw_markdown);
             app.file_path = path.to_path_buf();
@@ -228,6 +229,7 @@ pub(super) fn poll_watcher(app: &mut MdrApp) -> Task<Message> {
                 app.toc = md_helpers::extract_toc(&new_content);
                 app.focused_link = None;
                 app.line_count = new_content.lines().count();
+                app.source_content = iced::widget::text_editor::Content::with_text(&new_content);
                 app.raw_markdown = new_content;
                 app.content = markdown::Content::parse(&app.raw_markdown);
                 return spawn_image_loads(app);

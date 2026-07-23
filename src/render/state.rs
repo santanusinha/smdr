@@ -35,8 +35,14 @@ pub(super) const MAX_IMAGE_WIDTH: f32 = 800.0;
 /// Scrollable widget ID for programmatic scrolling.
 pub(super) const SCROLLABLE_ID: &str = "smdr-content-scroll";
 
+/// Scrollable widget ID for the read-only source (comment) view.
+pub(super) const SOURCE_SCROLLABLE_ID: &str = "smdr-source-scroll";
+
 /// Text input widget ID for search bar focus.
 pub(super) const SEARCH_INPUT_ID: &str = "smdr-search-input";
+
+/// Text input widget ID for the line-comment composer.
+pub(super) const COMMENT_INPUT_ID: &str = "smdr-comment-input";
 
 /// Scrollable widget ID for sidebar programmatic scrolling.
 pub(super) const SIDEBAR_SCROLLABLE_ID: &str = "smdr-sidebar-scroll";
@@ -167,6 +173,37 @@ pub(super) enum Message {
     /// A file path was received over IPC from another instance; open it
     /// in a new tab.
     IpcFileReceived(PathBuf),
+    // --- Comment / review mode (line-anchored comments) ---
+    /// Toggle the read-only, line-numbered source view used for commenting.
+    ToggleCommentMode,
+    /// A gutter line number was clicked; open the composer for that 0-based line.
+    GutterLineClicked(usize),
+    /// The comment composer text changed.
+    CommentDraftChanged(String),
+    /// Confirm the current composer draft, attaching it to the target line.
+    CommentSubmit,
+    /// Discard the current composer draft without saving.
+    CommentCancel,
+    /// A raw `text_editor` action from the source view. Edit actions are
+    /// ignored (read-only); selection/scroll/click actions are applied.
+    SourceEditorAction(iced::widget::text_editor::Action),
+}
+
+// ---------------------------------------------------------------------------
+// Line-anchored comment
+// ---------------------------------------------------------------------------
+
+/// A single comment anchored to a 0-based source line.
+///
+/// This is a deliberately minimal, in-memory stand-in. Persistence and the
+/// richer `Kind`/envelope model live on the `feature/annotation-review-mode`
+/// branch; when that merges, `line` maps 1:1 onto `annotate::Annotation.line`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LineComment {
+    /// 0-based source line the comment is anchored to.
+    pub(super) line: usize,
+    /// Freeform comment body.
+    pub(super) text: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +283,12 @@ impl MdrApp {
     /// Restore document state from a `SavedTab`.
     pub(super) fn restore_tab(&mut self, tab: SavedTab) {
         self.content = markdown::Content::parse(&tab.raw_markdown);
+        self.source_content = iced::widget::text_editor::Content::with_text(&tab.raw_markdown);
+        // Reset the composer for the incoming document; comment mode itself
+        // (the view toggle) is shared UI state and intentionally preserved.
+        self.comment_target_line = None;
+        self.comment_draft.clear();
+        self.comments.clear();
         self.raw_markdown = tab.raw_markdown;
         self.line_count = tab.line_count;
         self.file_path = tab.file_path;
@@ -352,4 +395,16 @@ pub(super) struct MdrApp {
     pub(super) tabs: Vec<SavedTab>,
     /// Index of the active tab (0 = first document).
     pub(super) active_tab: usize,
+    // --- Comment / review mode ---
+    /// Whether the read-only, line-numbered source view is active.
+    pub(super) comment_mode: bool,
+    /// Read-only editor content mirroring `raw_markdown`, rebuilt on load.
+    /// Wrapped so the line-oriented `text_editor` can render/select it.
+    pub(super) source_content: iced::widget::text_editor::Content,
+    /// Line the composer is currently open for (0-based), or `None`.
+    pub(super) comment_target_line: Option<usize>,
+    /// Current composer draft text.
+    pub(super) comment_draft: String,
+    /// All line-anchored comments authored this session (not yet persisted).
+    pub(super) comments: Vec<LineComment>,
 }

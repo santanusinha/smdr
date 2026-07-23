@@ -216,6 +216,7 @@ impl AppInit {
         let links = md_helpers::extract_links(&self.markdown_src);
         let toc = md_helpers::extract_toc(&self.markdown_src);
         let content = markdown::Content::parse(&self.markdown_src);
+        let source_content = iced::widget::text_editor::Content::with_text(&self.markdown_src);
         let base_dir = self
             .file_path
             .parent()
@@ -266,6 +267,11 @@ impl AppInit {
             viewport_height: 0.0,
             tabs: Vec::new(),
             active_tab: 0,
+            comment_mode: false,
+            source_content,
+            comment_target_line: None,
+            comment_draft: String::new(),
+            comments: Vec::new(),
         };
         app.line_count = app.raw_markdown.lines().count();
 
