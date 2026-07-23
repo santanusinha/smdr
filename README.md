@@ -2,7 +2,7 @@
 
 **Simple Markdown Reader** — a fast, native markdown viewer built with Rust and [iced](https://github.com/iced-rs/iced).
 
-Renders markdown files in a native window with vim-style navigation, live file watching, and 22 built-in themes.
+Renders markdown files in a native window with vim-style navigation, live file watching, 22 built-in themes, and an interactive **review mode** for annotating documents with inline comments.
 
 ## Install
 
@@ -80,6 +80,97 @@ creating a duplicate.
 | `-t`, `--theme <THEME>` | Color theme (default: `system`) |
 | `--no-network` | Disable network image fetching |
 | `--list-themes` | List available themes and exit |
+| `--review` | Open file in review mode (see [Review mode](#review-mode)) |
+| `--annotations-in <PATH>` | Path to an annotations JSON file (enables headless review) |
+| `--out <PATH>` | Write review output to `<PATH>` instead of stdout |
+| `--format <FORMAT>` | Output format: `json` (default), `md`, or `diff` |
+
+## Review mode
+
+smdr includes an interactive review mode that lets you annotate a Markdown
+document with inline comments and export the result in several formats.
+
+### Interactive review
+
+Open a file in the review UI:
+
+```sh
+smdr --review README.md
+```
+
+The source text is displayed with a gutter on the left. Click any gutter line
+number to open the comment composer for that line; press `Esc` to cancel
+without saving. When you are done, click **Submit review** (or press `Ctrl-Enter`)
+to emit the annotated output and exit.
+
+**Gutter key bindings**
+
+| Key / Action | Behaviour |
+|---|---|
+| Click gutter line number | Open comment composer for that line |
+| `c` | Toggle between rendered-source view and raw-comment-overlay view |
+| `Esc` (in composer) | Cancel the current comment without saving |
+| **Submit review** button | Emit output and exit |
+
+**Draft auto-save** — unsaved comments are automatically persisted to
+`$TMPDIR/smdr-drafts/` so they survive an accidental window close. Drafts are
+restored the next time you open the same file with `--review` and are cleared
+automatically when you submit.
+
+### Headless (one-shot) review
+
+If you already have an annotations file — for example one produced by another
+tool — you can run smdr non-interactively:
+
+```sh
+smdr --review --annotations-in annotations.json README.md
+```
+
+smdr reads the annotations, merges them with the source, and writes the result
+to stdout (or `--out <file>`) then exits immediately without opening a window.
+
+### Output formats
+
+| Value | Description |
+|-------|-------------|
+| `json` | Structured JSON — schema-tagged envelope with one object per annotation (default) |
+| `md` | Annotated Markdown — source with `<!-- smdr: … -->` comment blocks inserted after each annotated line |
+| `diff` | Unified-diff transport — insertion-only diff with 6 lines of context per hunk, suitable for patch workflows |
+
+#### JSON envelope schema
+
+The `json` format emits a single `ReviewEnvelope` object. The same schema is
+expected by `--annotations-in` when running headless:
+
+```json
+{
+  "schema": "smdr.review/v1",
+  "file": "README.md",
+  "comments": [
+    { "line": 0, "comment": "Title looks good." },
+    { "line": 7, "comment": "Add a quickstart example here." }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `schema` | string | Must be `"smdr.review/v1"` — bump on breaking changes |
+| `file` | string | Path to the file that was reviewed (informational) |
+| `comments[].line` | integer | **0-based** source line the comment is anchored to |
+| `comments[].comment` | string | Freeform review note |
+
+```sh
+# Export as annotated Markdown
+smdr --review --annotations-in a.json --format md --out review.md README.md
+
+# Export as a unified diff
+smdr --review --annotations-in a.json --format diff README.md | patch -p0
+```
+
+> **Note:** Draft files are stored in `$TMPDIR/smdr-drafts/` indefinitely until
+> you submit or manually delete them. A future release will add automatic
+> expiry of stale drafts.
 
 ## Keymap
 
@@ -139,7 +230,16 @@ creating a duplicate.
 | `Ctrl-T` | Cycle theme |
 | `?` | Show keyboard shortcuts |
 | `qq` / `ZZ` | Exit |
-| `Esc` | Close overlay / unfocus sidebar |
+| `Esc` | Close overlay / unfocus sidebar / cancel comment composer |
+
+### Review mode
+
+| Key / Action | Behaviour |
+|---|---|
+| Click gutter line | Open comment composer |
+| `c` | Toggle source / comment-overlay view |
+| `Esc` (in composer) | Cancel comment without saving |
+| `Ctrl-Enter` | Submit review and exit |
 
 ## Themes
 
