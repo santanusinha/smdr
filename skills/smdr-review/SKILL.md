@@ -1,3 +1,8 @@
+---
+name: smdr-review
+description: A native Markdown viewer with a built-in review mode. Opens a file in a GUI window, collects line-anchored comments from the user, and emits a structured JSON envelope on submit. Use it to gather precise human feedback on any content an agent produces.
+---
+
 # smdr-review — Agent Skill
 
 **smdr** is a native Markdown viewer with a built-in review mode: it opens a
