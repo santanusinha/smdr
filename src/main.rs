@@ -158,6 +158,13 @@ fn run_review(
 }
 
 fn main() {
+    // Re-exec'd daemon (macOS fork+exec path): already detached, go straight
+    // to the GUI without daemonizing again.
+    if daemon::is_daemonized() {
+        run_viewer(std::env::args().skip(1).collect());
+        return;
+    }
+
     let cli = Cli::parse();
 
     if cli.list_themes {
@@ -190,7 +197,7 @@ fn main() {
     }
 
     let theme = cli.theme.unwrap_or(ThemeArg::System);
-    let mut config = ViewerConfig {
+    let config = ViewerConfig {
         theme,
         // true iff --theme / -t was explicitly provided on the command line.
         theme_explicit: cli.theme.is_some(),
@@ -306,6 +313,65 @@ fn main() {
         return;
     }
 
+    run_viewer(cli_args_for_daemon(&cli, abs_paths));
+}
+
+/// Original argv (program name + user args) used to re-exec a fresh smdr
+/// image on macOS so AppKit initializes in a non-forked process.
+fn cli_args_for_daemon(cli: &Cli, abs_paths: Vec<PathBuf>) -> Vec<String> {
+    let mut args: Vec<String> = std::env::args().collect();
+    let file_count = cli.files.len();
+    if file_count > 0 {
+        let keep = args.len() - file_count;
+        args.truncate(keep);
+        args.extend(abs_paths.iter().map(|p| p.to_string_lossy().into_owned()));
+    }
+    args
+}
+
+/// Launch the GUI as the first (daemonized) instance.
+fn run_viewer(args: Vec<String>) {
+    // Parse the (possibly re-exec'd) arguments for viewer-relevant flags.
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    let abs_paths: Vec<PathBuf> = cli
+        .files
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
+
+    let theme = cli.theme.unwrap_or(ThemeArg::System);
+    let config = ViewerConfig {
+        theme,
+        theme_explicit: cli.theme.is_some(),
+        watch: cli.watch,
+        network_enabled: !cli.no_network,
+        review_mode: cli.review,
+        review_out: cli.out.clone(),
+        review_format: cli.format.into(),
+        ipc_enabled: !cli.review,
+        // Set below when daemonized. A daemonized process has stdout wired to
+        // /dev/null, so a review submit must fall back to a timestamped temp
+        // file rather than vanishing.
+        daemonized: daemon::is_daemonized(),
+    };
+
+    // If another instance is already running, hand off every path so each
+    // opens as a new tab, then exit without launching a second window.
+    let path_strs: Vec<String> = abs_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if config.ipc_enabled && ipc::client_send(&path_strs).is_ok() {
+        return;
+    }
+
     // No running instance — become the first one.  Detach from the controlling
     // terminal so the shell is not blocked, then launch the GUI (which also
     // runs the IPC server to receive future paths).  The first file is the
@@ -313,13 +379,13 @@ fn main() {
     //
     // SAFETY: `daemonize` forks; it must run before any threads (the tokio
     // runtime, iced's workers) are spawned.  We are still single-threaded here.
-    daemon::daemonize();
+    if daemon::daemonize(&args) {
+        // This invocation was the parent/intermediate: the daemon continues
+        // via re-exec. Nothing to do here.
+        return;
+    }
 
-    // Past the fork: stdout/stderr now point at /dev/null, so a review submit
-    // from this process can't reach the caller. Flag it so ReviewSubmit writes
-    // to a discoverable timestamped file under the temp dir instead.
-    config.daemonized = true;
-
+    // Daemon (or foreground fallback) — launch the GUI.
     if let Err(e) = render::launch(&abs_paths, &config) {
         eprintln!("Error: {e}");
         std::process::exit(1);
