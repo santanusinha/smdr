@@ -313,15 +313,15 @@ fn main() {
         return;
     }
 
-    run_viewer(cli_args_for_daemon(&cli, abs_paths));
+    run_viewer(cli_args_for_daemon(std::env::args().collect(), cli.files.len(), abs_paths));
 }
 
 /// Original argv (program name + user args) used to re-exec a fresh smdr
-/// image on macOS so AppKit initializes in a non-forked process.
-fn cli_args_for_daemon(cli: &Cli, abs_paths: Vec<PathBuf>) -> Vec<String> {
-    let mut args: Vec<String> = std::env::args().collect();
-    let file_count = cli.files.len();
-    if file_count > 0 {
+/// image on macOS so AppKit initializes in a non-forked process. Trailing
+/// file arguments are replaced with their canonicalized absolute paths so
+/// the re-exec'd process resolves them regardless of its own cwd.
+fn cli_args_for_daemon(mut args: Vec<String>, file_count: usize, abs_paths: Vec<PathBuf>) -> Vec<String> {
+    if file_count > 0 && args.len() >= file_count {
         let keep = args.len() - file_count;
         args.truncate(keep);
         args.extend(abs_paths.iter().map(|p| p.to_string_lossy().into_owned()));
@@ -393,4 +393,39 @@ fn run_viewer(args: Vec<String>) {
 
     // Best-effort cleanup of the IPC socket on exit.
     ipc::cleanup_socket();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn daemon_args_replace_relative_files_with_absolute() {
+        let args = vec![
+            "smdr".to_string(),
+            "-w".to_string(),
+            "a.md".to_string(),
+            "b.md".to_string(),
+        ];
+        let abs = vec![PathBuf::from("/tmp/x/a.md"), PathBuf::from("/tmp/x/b.md")];
+        let out = cli_args_for_daemon(args, 2, abs);
+        assert_eq!(out, vec!["smdr", "-w", "/tmp/x/a.md", "/tmp/x/b.md"]);
+    }
+
+    #[test]
+    fn daemon_args_passthrough_when_no_files() {
+        let args = vec!["smdr".to_string(), "--theme".to_string(), "dark".to_string()];
+        let out = cli_args_for_daemon(args.clone(), 0, vec![]);
+        assert_eq!(out, args);
+    }
+
+    #[test]
+    fn daemon_args_survive_arg_count_mismatch() {
+        // Fewer argv entries than parsed files (cannot happen via clap, but
+        // must not panic if it ever does).
+        let args = vec!["smdr".to_string()];
+        let out = cli_args_for_daemon(args, 3, vec![PathBuf::from("/tmp/a.md")]);
+        assert_eq!(out, vec!["smdr"]);
+    }
 }
