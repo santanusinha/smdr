@@ -4,10 +4,53 @@ All notable changes to **smdr** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
-# Changelog
 
-All notable changes to **smdr** are documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+## [0.1.7] — 2026-10-15
+
+### Added
+- **Delete a comment** — the review composer now has a delete button. It
+  removes the comment on the selected line and saves the updated draft.
+- **Icon-only composer buttons** — save, delete, and cancel are transparent
+  buttons with coloured icons (green tick, red bin, blue cross).
+- **Two-axis scrolling in review mode** — the source view scrolls
+  horizontally as well as vertically. `Shift`-wheel maps to a horizontal
+  scroll. A `SourceViewer` widget draws only the visible line window, so
+  large files stay fast.
+
+### Fixed
+- **macOS launch crash** — `smdr <file>` on macOS died with
+  `SIGBUS: KERN_PROTECTION_FAILURE`. The daemon now does fork, setsid, and
+  `execv` of itself. AppKit then starts in a clean process. A
+  `SMDR_DAEMONIZED=1` marker stops a re-exec loop. Any failure falls back to
+  the foreground. Closes #3.
+- **Outline scrollbar** — the sidebar scrollable now fills the available
+  width.
+
+### Performance
+- The 500 ms ticker now runs only when file watching is active. A static
+  review window no longer rebuilds the document twice per second.
+- Sources larger than 64 KiB skip synchronous syntax highlighting.
+
+### Build
+- Clippy and formatting are clean on Linux and macOS.
+
+---
+
+## [0.1.6] — 2026-07-24
+
+### Fixed
+- Formatting fixes so the CI `cargo fmt --check` job passes.
+
+### Docs
+- Homebrew formula updated to `v0.1.6`.
+
+---
+
+## [0.1.5] — 2026-07-24
+
+### Added
+- **Delete a comment** — new `CommentDelete` message and handler.
+- **Icon composer buttons** — transparent buttons with coloured icons.
 
 ---
 

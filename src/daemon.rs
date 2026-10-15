@@ -37,7 +37,6 @@ const DAEMON_ENV: &str = "SMDR_DAEMONIZED";
 #[cfg(unix)]
 pub(crate) fn daemonize(original_args: &[String]) -> bool {
     use std::os::fd::RawFd;
-    use std::os::unix::ffi::OsStrExt as _;
 
     // Already re-exec'd once: this process is the daemon. Attach stdio to
     // /dev/null (exec preserves fds, so the fork child's /dev/null wiring
@@ -87,6 +86,8 @@ pub(crate) fn daemonize(original_args: &[String]) -> bool {
         // sees SMDR_DAEMONIZED=1 and skips daemonization.
         #[cfg(target_os = "macos")]
         {
+            use std::os::unix::ffi::OsStrExt as _;
+
             let exe = match std::env::current_exe() {
                 Ok(p) => p,
                 Err(e) => {
@@ -142,6 +143,9 @@ pub(crate) fn daemonize(original_args: &[String]) -> bool {
         // daemonization is safe without AppKit).
         #[cfg(not(target_os = "macos"))]
         {
+            // The argv rewrite is only needed for the macOS re-exec path.
+            let _ = original_args;
+
             // Second fork (prevents re-acquiring a controlling terminal).
             let pid = libc::fork();
             if pid < 0 {
@@ -152,7 +156,9 @@ pub(crate) fn daemonize(original_args: &[String]) -> bool {
                 // Intermediate child exits.
                 std::process::exit(0);
             }
-            // Grandchild continues as the daemon.
+            // Grandchild continues as the daemon. Mark it so a review submit
+            // falls back to a temp file (stdout is /dev/null from here on).
+            std::env::set_var(DAEMON_ENV, "1");
             false
         }
     }

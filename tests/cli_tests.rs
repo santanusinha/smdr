@@ -434,9 +434,5 @@ fn daemon_env_marker_skips_daemonize_and_reaches_viewer() {
 #[test]
 fn no_marker_dry_run_still_clean() {
     let (_dir, path) = temp_md_file("# hi\n");
-    smdr()
-        .arg("--dry-run")
-        .arg(&path)
-        .assert()
-        .success();
+    smdr().arg("--dry-run").arg(&path).assert().success();
 }

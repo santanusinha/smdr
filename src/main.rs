@@ -313,14 +313,22 @@ fn main() {
         return;
     }
 
-    run_viewer(cli_args_for_daemon(std::env::args().collect(), cli.files.len(), abs_paths));
+    run_viewer(cli_args_for_daemon(
+        std::env::args().collect(),
+        cli.files.len(),
+        abs_paths,
+    ));
 }
 
 /// Original argv (program name + user args) used to re-exec a fresh smdr
 /// image on macOS so AppKit initializes in a non-forked process. Trailing
 /// file arguments are replaced with their canonicalized absolute paths so
 /// the re-exec'd process resolves them regardless of its own cwd.
-fn cli_args_for_daemon(mut args: Vec<String>, file_count: usize, abs_paths: Vec<PathBuf>) -> Vec<String> {
+fn cli_args_for_daemon(
+    mut args: Vec<String>,
+    file_count: usize,
+    abs_paths: Vec<PathBuf>,
+) -> Vec<String> {
     if file_count > 0 && args.len() >= file_count {
         let keep = args.len() - file_count;
         args.truncate(keep);
@@ -347,7 +355,7 @@ fn run_viewer(args: Vec<String>) {
         .collect();
 
     let theme = cli.theme.unwrap_or(ThemeArg::System);
-    let config = ViewerConfig {
+    let mut config = ViewerConfig {
         theme,
         theme_explicit: cli.theme.is_some(),
         watch: cli.watch,
@@ -356,10 +364,10 @@ fn run_viewer(args: Vec<String>) {
         review_out: cli.out.clone(),
         review_format: cli.format.into(),
         ipc_enabled: !cli.review,
-        // Set below when daemonized. A daemonized process has stdout wired to
-        // /dev/null, so a review submit must fall back to a timestamped temp
-        // file rather than vanishing.
-        daemonized: daemon::is_daemonized(),
+        // Set after daemonization (below). A daemonized process has stdout
+        // wired to /dev/null, so a review submit must fall back to a
+        // timestamped temp file rather than vanishing.
+        daemonized: false,
     };
 
     // If another instance is already running, hand off every path so each
@@ -384,6 +392,11 @@ fn run_viewer(args: Vec<String>) {
         // via re-exec. Nothing to do here.
         return;
     }
+
+    // Past the fork: stdout/stderr now point at /dev/null. Read the marker so a
+    // review submit from this process writes to a discoverable temp file. On
+    // macOS this is the re-exec'd process; on Linux it is the fork grandchild.
+    config.daemonized = daemon::is_daemonized();
 
     // Daemon (or foreground fallback) — launch the GUI.
     if let Err(e) = render::launch(&abs_paths, &config) {
@@ -415,7 +428,11 @@ mod tests {
 
     #[test]
     fn daemon_args_passthrough_when_no_files() {
-        let args = vec!["smdr".to_string(), "--theme".to_string(), "dark".to_string()];
+        let args = vec![
+            "smdr".to_string(),
+            "--theme".to_string(),
+            "dark".to_string(),
+        ];
         let out = cli_args_for_daemon(args.clone(), 0, vec![]);
         assert_eq!(out, args);
     }
