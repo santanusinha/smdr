@@ -5,10 +5,11 @@ use iced::event;
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::{
-    Id, button, column, container, markdown, mouse_area, pick_list, row, rule, scrollable, text,
-    text_editor, text_input,
+    Id, Space, button, column, container, markdown, mouse_area, pick_list, row, rule, scrollable,
+    stack, text, text_editor, text_input,
 };
 use iced::{Alignment, Background, Color, Element, Event, Font, Length, Pixels, Subscription};
+use unicode_width::UnicodeWidthChar;
 
 use smdr::theme::ThemeArg;
 
@@ -17,7 +18,7 @@ use super::state::{
     COMMENT_INPUT_ID, LINE_SCROLL, MdrApp, Message, Overlay, SCROLLABLE_ID, SEARCH_INPUT_ID,
     SOURCE_LINE_HEIGHT, SOURCE_LINE_PX, SOURCE_SCROLLABLE_ID, SOURCE_TEXT_SIZE, SOURCE_TOP_PAD,
 };
-use super::widget::MdrViewer;
+use super::widget::{MdrViewer, SourceViewer};
 
 // ---------------------------------------------------------------------------
 // Gutter color constants (dark / light variants)
@@ -39,6 +40,21 @@ const LINE_NUM_COLOR_LIGHT: Color = Color::from_rgb(0.50, 0.52, 0.58);
 const ROW_HL_DARK: Color = Color::from_rgb(0.20, 0.24, 0.32);
 /// Gutter active-row highlight color (light theme).
 const ROW_HL_LIGHT: Color = Color::from_rgb(0.85, 0.90, 0.98);
+
+/// Fixed width of the source line-number gutter.
+const SOURCE_GUTTER_WIDTH: f32 = 56.0;
+/// Horizontal padding on each side of the source editor.
+const SOURCE_EDITOR_X_PAD: f32 = 8.0;
+/// Iced/cosmic-text's default tab stop, in monospace columns.
+const SOURCE_TAB_WIDTH: usize = 8;
+/// Maximum source size that is synchronously syntax-highlighted in review mode.
+///
+/// Iced's editor highlights every line covered by its own bounds. The review
+/// editor is intentionally full-height so its gutter can share an outer
+/// scrollable, which makes highlighting large sources block the first frame.
+const MAX_HIGHLIGHTED_SOURCE_BYTES: usize = 64 * 1024;
+/// Width of the sidebar divider: a 1 px rule with 2 px padding on each side.
+const SIDEBAR_DIVIDER_WIDTH: f32 = 5.0;
 
 /// Build the main UI element tree.
 pub(super) fn build_ui(app: &MdrApp) -> Element<'_, Message> {
@@ -247,23 +263,107 @@ fn build_source_body<'a>(
         iced::highlighter::Theme::InspiredGitHub
     };
 
-    let editor = text_editor(&app.source_content)
-        .on_action(Message::SourceEditorAction)
-        .font(Font::MONOSPACE)
-        .size(SOURCE_TEXT_SIZE)
-        .line_height(SOURCE_LINE_HEIGHT)
-        .padding([SOURCE_TOP_PAD, 8.0])
-        .wrapping(text::Wrapping::None)
-        .highlight("markdown", hl_theme)
-        .height(Length::Fixed(editor_height));
+    let editor = || {
+        text_editor(&app.source_content)
+            .on_action(Message::SourceEditorAction)
+            .font(Font::MONOSPACE)
+            .size(SOURCE_TEXT_SIZE)
+            .line_height(SOURCE_LINE_HEIGHT)
+            .padding([SOURCE_TOP_PAD, SOURCE_EDITOR_X_PAD])
+            .wrapping(text::Wrapping::None)
+            .height(Length::Fixed(editor_height))
+    };
+
+    // Syntect highlighting is synchronous and the editor sees its full
+    // document-height bounds, not the outer scrollable's clipped viewport.
+    // Keep highlighting for ordinary reviews and fall back to plain monospace
+    // text for larger sources so the first frame is not blocked.
+    let source_surface: Element<'a, Message> = if should_highlight_source(&app.raw_markdown) {
+        // TextEditor consumes wheel events and discards their horizontal delta.
+        // This top layer captures only scrolling before the editor sees it;
+        // clicks and drags still fall through for selection and commenting.
+        let wheel_catcher = mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+            .on_scroll(Message::SourceWheelScrolled);
+
+        stack![editor().highlight("markdown", hl_theme), wheel_catcher].into()
+    } else {
+        container(SourceViewer::new(&app.raw_markdown, line_count))
+            .padding([SOURCE_TOP_PAD, SOURCE_EDITOR_X_PAD])
+            .width(Length::Fill)
+            .height(Length::Fixed(editor_height))
+            .into()
+    };
+
+    // TextEditor does not expose the intrinsic width of unwrapped content.
+    // Measure the widest line invisibly with the same renderer and font, then
+    // let the editor fill that finite width inside the two-axis scrollable.
+    let widest_line = widest_source_line(&app.raw_markdown);
+    let min_inner_width = (source_editor_viewport_width(app) - 2.0 * SOURCE_EDITOR_X_PAD).max(0.0);
+    let width_probe = container(column![
+        Space::new()
+            .width(Length::Fixed(min_inner_width))
+            .height(Length::Fixed(0.0)),
+        text(widest_line)
+            .font(Font::MONOSPACE)
+            .size(SOURCE_TEXT_SIZE)
+            .wrapping(text::Wrapping::None)
+            .color(Color::TRANSPARENT),
+    ])
+    .padding([SOURCE_TOP_PAD, SOURCE_EDITOR_X_PAD])
+    .height(Length::Fixed(editor_height));
+
+    let editor = stack![width_probe, source_surface];
 
     let gutter_col = build_gutter(app, is_dark, line_count);
 
-    scrollable(row![gutter_col, editor].width(Length::Fill))
+    scrollable(row![gutter_col, editor].width(Length::Shrink))
         .id(Id::new(SOURCE_SCROLLABLE_ID))
+        .direction(scrollable::Direction::Both {
+            vertical: scrollable::Scrollbar::default(),
+            horizontal: scrollable::Scrollbar::default(),
+        })
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// Approximate the visible width available to the source editor. The
+/// renderer-measured widest line can grow beyond this width; this is only the
+/// floor that keeps short documents filling the viewport as before.
+fn source_editor_viewport_width(app: &MdrApp) -> f32 {
+    let sidebar_width = if app.sidebar_open && !app.toc.is_empty() {
+        app.window_width * app.sidebar_ratio + SIDEBAR_DIVIDER_WIDTH
+    } else {
+        0.0
+    };
+
+    (app.window_width - sidebar_width - SOURCE_GUTTER_WIDTH).max(0.0)
+}
+
+/// Return the source line with the greatest monospace display width.
+///
+/// `str::len` and `chars().count()` are insufficient here: wide Unicode
+/// glyphs occupy two columns, combining marks occupy none, and tabs advance to
+/// the next eight-column stop.
+fn widest_source_line(source: &str) -> &str {
+    source
+        .lines()
+        .max_by_key(|line| source_line_columns(line))
+        .unwrap_or("")
+}
+
+fn source_line_columns(line: &str) -> usize {
+    line.chars().fold(0, |columns, ch| {
+        if ch == '\t' {
+            columns + SOURCE_TAB_WIDTH - columns % SOURCE_TAB_WIDTH
+        } else {
+            columns + UnicodeWidthChar::width(ch).unwrap_or(0)
+        }
+    })
+}
+
+fn should_highlight_source(source: &str) -> bool {
+    source.len() <= MAX_HIGHLIGHTED_SOURCE_BYTES
 }
 
 /// Build the line-number gutter: one clickable row per source line.
@@ -273,7 +373,7 @@ fn build_source_body<'a>(
 fn build_gutter<'a>(app: &'a MdrApp, is_dark: bool, line_count: usize) -> Element<'a, Message> {
     let commented: std::collections::HashSet<usize> = app.comments.iter().map(|c| c.line).collect();
     let target = app.comment_target_line;
-    let mut gutter = column![].width(Length::Fixed(56.0));
+    let mut gutter = column![].width(Length::Fixed(SOURCE_GUTTER_WIDTH));
 
     for i in 0..line_count {
         let has_comment = commented.contains(&i);
@@ -751,17 +851,17 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                 ),
                 event,
             )| {
-                let keyboard::Event::KeyPressed {
-                    key,
-                    modifiers,
-                    text: _,
-                    modified_key,
-                    physical_key: _,
-                    location: _,
-                    repeat: _,
-                } = event
-                else {
-                    return None;
+                let (key, modifiers, modified_key) = match event {
+                    keyboard::Event::ModifiersChanged(modifiers) => {
+                        return Some(Message::KeyboardModifiersChanged(modifiers));
+                    }
+                    keyboard::Event::KeyPressed {
+                        key,
+                        modifiers,
+                        modified_key,
+                        ..
+                    } => (key, modifiers, modified_key),
+                    _ => return None,
                 };
 
                 // Escape always closes overlay, search, sidebar focus, or an
@@ -968,8 +1068,6 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
                 }
             });
 
-    let ticker = iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick);
-
     let window_resize =
         iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size));
 
@@ -980,11 +1078,53 @@ pub(super) fn build_subscription(app: &MdrApp) -> Subscription<Message> {
     // Disabled in review mode (`ipc_enabled == false`): a review window is a
     // one-shot, self-contained process — it must not bind the shared socket or
     // accept tab hand-offs from a normal viewer, so its output stays clean.
-    let mut subs = vec![keys, mouse_events, window_resize, ticker];
+    let mut subs = vec![keys, mouse_events, window_resize];
+
+    // Poll only when file watching is active. Subscribing unconditionally made
+    // static review windows rebuild the full source document twice per second.
+    if app.watcher_rx.is_some() {
+        subs.push(iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick));
+    }
     if app.ipc_enabled {
         let ipc = Subscription::run(crate::ipc::server_worker).map(Message::IpcFileReceived);
         subs.push(ipc);
     }
 
     Subscription::batch(subs)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_HIGHLIGHTED_SOURCE_BYTES, should_highlight_source, source_line_columns,
+        widest_source_line,
+    };
+
+    #[test]
+    fn source_line_columns_accounts_for_tabs_and_unicode() {
+        assert_eq!(source_line_columns("a\tb"), 9);
+        assert_eq!(source_line_columns("界e\u{301}"), 3);
+    }
+
+    #[test]
+    fn widest_source_line_uses_display_columns() {
+        let source = "12345678\nx\tz\n界界界界";
+
+        assert_eq!(widest_source_line(source), "x\tz");
+        assert_eq!(widest_source_line(""), "");
+    }
+
+    #[test]
+    fn large_source_skips_synchronous_highlighting() {
+        assert!(should_highlight_source(
+            &"a".repeat(MAX_HIGHLIGHTED_SOURCE_BYTES)
+        ));
+        assert!(!should_highlight_source(
+            &"a".repeat(MAX_HIGHLIGHTED_SOURCE_BYTES + 1)
+        ));
+    }
 }

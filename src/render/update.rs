@@ -1,7 +1,7 @@
 //! Central message dispatch — routes messages to feature handlers.
 
-use iced::Task;
 use iced::widget::Id;
+use iced::{Task, mouse};
 
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 
@@ -13,6 +13,22 @@ use super::navigation;
 use super::search;
 use super::sidebar;
 use super::state::{MdrApp, Message, Overlay, SCROLLABLE_ID};
+
+/// Pixel distance used by Iced's native scrollable for one line-wheel unit.
+const WHEEL_LINE_PX: f32 = 60.0;
+
+fn source_scroll_offset(delta: mouse::ScrollDelta, swap_line_axes: bool) -> AbsoluteOffset {
+    match delta {
+        mouse::ScrollDelta::Lines { x, y } => {
+            let (x, y) = if swap_line_axes { (y, x) } else { (x, y) };
+            AbsoluteOffset {
+                x: -x * WHEEL_LINE_PX,
+                y: -y * WHEEL_LINE_PX,
+            }
+        }
+        mouse::ScrollDelta::Pixels { x, y } => AbsoluteOffset { x: -x, y: -y },
+    }
+}
 
 /// Handle an incoming [`Message`] and produce a [`Task<Message`].
 ///
@@ -140,6 +156,10 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         }
         Message::WindowResized(size) => {
             app.window_width = size.width;
+            Task::none()
+        }
+        Message::KeyboardModifiersChanged(modifiers) => {
+            app.keyboard_modifiers = modifiers;
             Task::none()
         }
         Message::ImageLoaded(url, data) => {
@@ -364,25 +384,30 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
             }
             Task::none()
         }
+        Message::SourceWheelScrolled(delta) => {
+            // Match Iced's native scrollable behavior. On macOS the platform
+            // already turns Shift-wheel into a horizontal line delta; other
+            // platforms need the axes swapped here. Pixel-precise trackpad
+            // deltas retain both axes unchanged.
+            let swap_line_axes = app.keyboard_modifiers.shift() && !cfg!(target_os = "macos");
+            operation::scroll_by(
+                Id::new(super::state::SOURCE_SCROLLABLE_ID),
+                source_scroll_offset(delta, swap_line_axes),
+            )
+        }
         Message::SourceEditorAction(action) => {
             // Read-only source view: apply navigation/selection actions but
             // ignore edits so the buffer always mirrors `raw_markdown`.
             //
             // The editor is laid out at full content height so the *outer*
             // scrollable drives scrolling (keeping gutter and text in lockstep).
-            // Because of that, the editor itself can't scroll, yet it still
-            // captures wheel events and emits `Action::Scroll` — which would be
-            // a no-op if performed on the editor. Redirect those to the outer
-            // scrollable so the mouse wheel works in review mode.
+            // Wheel input is captured with its original x/y delta by the
+            // transparent layer above the editor. Ignore any fallback editor
+            // scroll action so its private offset cannot desynchronise the
+            // source text from the gutter.
             use iced::widget::text_editor::Action;
-            if let Action::Scroll { lines } = action {
-                return operation::scroll_by(
-                    Id::new(super::state::SOURCE_SCROLLABLE_ID),
-                    AbsoluteOffset {
-                        x: 0.0,
-                        y: lines as f32 * super::state::SOURCE_LINE_PX,
-                    },
-                );
+            if matches!(action, Action::Scroll { .. }) {
+                return Task::none();
             }
             // A click doubles as line selection for commenting: the resulting
             // cursor line seeds the composer target.
@@ -506,5 +531,40 @@ pub(super) fn handle_message(app: &mut MdrApp, message: Message) -> Task<Message
         // Search and sidebar messages are handled above and never reach here,
         // but Rust requires all variants covered.
         _ => Task::none(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use iced::mouse::ScrollDelta;
+
+    use super::source_scroll_offset;
+
+    #[test]
+    fn source_line_scroll_preserves_both_axes() {
+        let offset = source_scroll_offset(ScrollDelta::Lines { x: 2.0, y: -3.0 }, false);
+
+        assert_eq!(offset.x, -120.0);
+        assert_eq!(offset.y, 180.0);
+    }
+
+    #[test]
+    fn source_line_scroll_swaps_axes_for_shift_wheel() {
+        let offset = source_scroll_offset(ScrollDelta::Lines { x: 0.0, y: 1.5 }, true);
+
+        assert_eq!(offset.x, -90.0);
+        assert_eq!(offset.y, 0.0);
+    }
+
+    #[test]
+    fn source_pixel_scroll_remains_precise_and_is_not_swapped() {
+        let offset = source_scroll_offset(ScrollDelta::Pixels { x: 12.5, y: -4.25 }, true);
+
+        assert_eq!(offset.x, -12.5);
+        assert_eq!(offset.y, 4.25);
     }
 }

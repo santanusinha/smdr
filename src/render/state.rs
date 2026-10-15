@@ -176,6 +176,7 @@ pub(super) enum Message {
     Tick,
     Scrolled(scrollable::Viewport),
     WindowResized(Size),
+    KeyboardModifiersChanged(iced::keyboard::Modifiers),
     ImageLoaded(String, Option<ImageData>),
     MermaidZoomIn,
     MermaidZoomOut,
@@ -221,6 +222,8 @@ pub(super) enum Message {
     /// A raw `text_editor` action from the source view. Edit actions are
     /// ignored (read-only); selection/scroll/click actions are applied.
     SourceEditorAction(iced::widget::text_editor::Action),
+    /// Raw two-axis wheel/trackpad movement captured above the source editor.
+    SourceWheelScrolled(iced::mouse::ScrollDelta),
     /// Finish the review turn: emit the annotations envelope (to `--out` or
     /// stdout) and exit.
     ReviewSubmit,
@@ -398,6 +401,8 @@ pub(super) struct MdrApp {
     pub(super) sidebar_dragging: bool,
     /// Current window width in pixels (updated on resize events).
     pub(super) window_width: f32,
+    /// Current keyboard modifiers, used to mirror native Shift-wheel behavior.
+    pub(super) keyboard_modifiers: iced::keyboard::Modifiers,
     /// Cached images keyed by URL.
     pub(super) image_cache: HashMap<String, ImageData>,
     /// URLs that are currently being loaded.

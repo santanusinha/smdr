@@ -283,6 +283,7 @@ impl AppInit {
             sidebar_ratio: DEFAULT_SIDEBAR_RATIO,
             sidebar_dragging: false,
             window_width: INITIAL_WINDOW_WIDTH,
+            keyboard_modifiers: iced::keyboard::Modifiers::default(),
             image_cache: HashMap::new(),
             image_pending: HashSet::new(),
             image_failed: HashSet::new(),

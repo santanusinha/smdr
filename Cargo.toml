@@ -15,7 +15,7 @@ categories = ["command-line-utilities", "gui", "visualization"]
 clap           = { version = "4", features = ["derive"] }
 notify         = "9.0.0-rc.4"
 open           = "5"
-iced           = { version = "0.14", features = ["markdown", "highlighter", "tokio", "wgpu", "wayland", "x11", "svg", "image"] }
+iced           = { version = "0.14", features = ["advanced", "markdown", "highlighter", "tokio", "wgpu", "wayland", "x11", "svg", "image"] }
 pulldown-cmark = "0.12"
 mermaid-rs-renderer = { version = "0.2", default-features = false }
 reqwest        = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -24,6 +24,7 @@ urlencoding = "2.1.3"
 serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
 libc           = "0.2"
+unicode-width  = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"

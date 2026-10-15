@@ -4,13 +4,159 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use iced::advanced::text::Renderer as _;
+use iced::advanced::widget::Tree;
+use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer, text as advanced_text};
 use iced::widget::{
     column, container, image as image_widget, markdown, rich_text, scrollable, span, svg, text,
 };
-use iced::{Color, ContentFit, Element, Length, Renderer, Theme};
+use iced::{
+    Color, ContentFit, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size,
+    Theme, mouse,
+};
 
-use super::state::{ImageData, MAX_IMAGE_WIDTH};
+use super::state::{
+    ImageData, MAX_IMAGE_WIDTH, Message, SOURCE_LINE_HEIGHT, SOURCE_LINE_PX, SOURCE_TEXT_SIZE,
+};
 use super::styles::code_block_container_style;
+
+/// A read-only source surface that only shapes and draws lines intersecting
+/// the current scroll viewport.
+///
+/// Iced's `TextEditor` ignores the parent viewport during drawing. Giving it
+/// document-sized bounds therefore prepares every glyph up front. This widget
+/// keeps the same full-size scroll geometry while rendering just the visible
+/// line window, which is important for large review files.
+pub(super) struct SourceViewer<'a> {
+    source: &'a str,
+    line_count: usize,
+}
+
+impl<'a> SourceViewer<'a> {
+    pub(super) fn new(source: &'a str, line_count: usize) -> Self {
+        Self { source, line_count }
+    }
+}
+
+impl Widget<Message, Theme, Renderer> for SourceViewer<'_> {
+    fn size(&self) -> Size<Length> {
+        Size::new(
+            Length::Fill,
+            Length::Fixed(self.line_count as f32 * SOURCE_LINE_PX),
+        )
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::atomic(
+            limits,
+            Length::Fill,
+            Length::Fixed(self.line_count as f32 * SOURCE_LINE_PX),
+        )
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if !matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+        ) {
+            return;
+        }
+
+        let Some(position) = cursor.position_over(layout.bounds()) else {
+            return;
+        };
+        if !viewport.contains(position) {
+            return;
+        }
+
+        let line = ((position.y - layout.bounds().y) / SOURCE_LINE_PX).floor() as usize;
+        if line < self.line_count {
+            shell.publish(Message::GutterLineClicked(line));
+            shell.capture_event();
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        _tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        cursor
+            .position_over(layout.bounds())
+            .filter(|position| viewport.contains(*position))
+            .map_or(mouse::Interaction::None, |_| mouse::Interaction::Pointer)
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        renderer: &mut Renderer,
+        _theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let Some(visible) = bounds.intersection(viewport) else {
+            return;
+        };
+
+        let first_line = ((visible.y - bounds.y) / SOURCE_LINE_PX).floor() as usize;
+        let last_line = (((visible.y + visible.height - bounds.y) / SOURCE_LINE_PX).ceil()
+            as usize)
+            .min(self.line_count);
+
+        for (line_index, line) in self
+            .source
+            .lines()
+            .enumerate()
+            .skip(first_line)
+            .take(last_line.saturating_sub(first_line))
+        {
+            renderer.fill_text(
+                advanced_text::Text {
+                    content: line.to_owned(),
+                    bounds: Size::new(bounds.width, SOURCE_LINE_PX),
+                    size: Pixels(SOURCE_TEXT_SIZE),
+                    line_height: advanced_text::LineHeight::Relative(SOURCE_LINE_HEIGHT),
+                    font: Font::MONOSPACE,
+                    align_x: advanced_text::Alignment::Default,
+                    align_y: iced::alignment::Vertical::Top,
+                    shaping: advanced_text::Shaping::Advanced,
+                    wrapping: advanced_text::Wrapping::None,
+                },
+                Point::new(bounds.x, bounds.y + line_index as f32 * SOURCE_LINE_PX),
+                style.text_color,
+                visible,
+            );
+        }
+    }
+}
+
+impl<'a> From<SourceViewer<'a>> for Element<'a, Message> {
+    fn from(viewer: SourceViewer<'a>) -> Self {
+        Element::new(viewer)
+    }
+}
 
 pub(super) struct MdrViewer<'b> {
     pub(super) image_cache: &'b HashMap<String, ImageData>,

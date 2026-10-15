@@ -158,6 +158,7 @@ pub(super) fn build_sidebar(app: &MdrApp) -> Element<'_, Message> {
             header,
             scrollable(items)
                 .id(Id::new(SIDEBAR_SCROLLABLE_ID))
+                .width(Length::Fill)
                 .height(Length::Fill)
         ]
         .height(Length::Fill)
