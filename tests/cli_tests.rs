@@ -399,3 +399,44 @@ fn test_list_themes_output_contains_known_themes() {
             .and(predicate::str::contains("solarized-dark")),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Daemon re-exec marker (macOS fork+exec fix, issue #3)
+// ---------------------------------------------------------------------------
+
+/// With SMDR_DAEMONIZED=1 the binary must skip daemonization entirely and go
+/// straight to the viewer path. Headless, the GUI launch then fails with a
+/// visible error and a non-zero exit — which is exactly what proves the
+/// marker was honored: without it, the process would detach (parent exits 0)
+/// or, on the old code, crash silently in the forked child.
+#[test]
+fn daemon_env_marker_skips_daemonize_and_reaches_viewer() {
+    let (_dir, path) = temp_md_file("# hi\n");
+    let out = smdr()
+        .env("SMDR_DAEMONIZED", "1")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "daemonized re-exec should attempt the GUI and fail headless, not exit 0"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Error:"),
+        "expected a visible GUI launch error, got: {stderr}"
+    );
+}
+
+/// Sanity: without the marker, --dry-run still exits 0 before any
+/// daemonization or GUI work (guards the test above from false positives).
+#[test]
+fn no_marker_dry_run_still_clean() {
+    let (_dir, path) = temp_md_file("# hi\n");
+    smdr()
+        .arg("--dry-run")
+        .arg(&path)
+        .assert()
+        .success();
+}
